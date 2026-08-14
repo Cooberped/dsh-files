@@ -51,10 +51,16 @@ function sessionCwd(exec: { agent?: { session?: { header?: { cwd?: string } } } 
   return exec.agent?.session?.header?.cwd
 }
 
-function renderEnvelope(path: string, format: string, value: { offset: number; lines: unknown[]; totalLines: number }): string {
+function renderEnvelope(path: string, format: string, value: { offset: number; lines: Array<{ number: number; text: string }>; totalLines: number }): string {
+  // 信封带前两行正文预览：模型一眼看到内容在 lines 里，不会误以为只有元信息。
+  const preview = value.lines
+    .slice(0, 2)
+    .map((l) => `  ${l.number}: ${l.text.slice(0, 120)}`)
+    .join('\n')
   return [
     `### document ${path} (${format})`,
-    `offset ${value.offset}, ${value.lines.length}/${value.totalLines} lines`
+    `offset ${value.offset}, ${value.lines.length}/${value.totalLines} lines; full content in \`lines\`:`,
+    preview
   ].join('\n')
 }
 
