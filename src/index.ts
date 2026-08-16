@@ -29,11 +29,13 @@ export interface DocsConfig {
   maxSheets: number
   cacheEntries: number
   cacheMaxBytes: number
+  maxOutputChars: number
   uploadMaxBytes: number
   allowedExtensions: string[]
   uploadTtlMs: number
   sweepIntervalMs: number
   maxConcurrentUploads: number
+  maxUploadBytesPerSession: number
   uploadDir: string
 }
 
@@ -41,7 +43,7 @@ export const Config = z.object({
   /** Byte cap for one document read (PDF parsing amplifies memory severalfold). */
   maxFileBytes: z.number().default(24 * MEBIBYTE),
   /** Default and maximum number of lines returned by one call. */
-  readLimit: z.number().default(2000),
+  readLimit: z.number().default(800),
   /** Rows kept per worksheet. */
   sheetRowLimit: z.number().default(200),
   /** Sheets read per workbook (the rest are reported as truncated). */
@@ -50,6 +52,8 @@ export const Config = z.object({
   cacheEntries: z.number().default(16),
   /** Parse-cache byte budget; large PDFs dominate retained memory. */
   cacheMaxBytes: z.number().default(64 * MEBIBYTE),
+  /** Per-call window character budget; the window is truncated with an explicit marker when exceeded. */
+  maxOutputChars: z.number().default(50000),
   /** Byte cap for one upload body. */
   uploadMaxBytes: z.number().default(24 * MEBIBYTE),
   /** Lowercase extension allowlist for uploads; empty means all allowed. */
@@ -60,6 +64,8 @@ export const Config = z.object({
   sweepIntervalMs: z.number().default(60 * 60 * 1000),
   /** Concurrent upload bodies admitted at once. */
   maxConcurrentUploads: z.number().default(4),
+  /** Per-session storage byte quota; 0 disables the check. */
+  maxUploadBytesPerSession: z.number().default(0),
   /** Upload storage root; files land in <root>/.dsh-filess/<sessionId>/. */
   uploadDir: z.string().default(join(process.cwd(), 'uploads'))
 })
@@ -76,6 +82,7 @@ export function apply(ctx: any, config: DocsConfig): void {
     ['maxSheets', config.maxSheets],
     ['cacheEntries', config.cacheEntries],
     ['cacheMaxBytes', config.cacheMaxBytes],
+    ['maxOutputChars', config.maxOutputChars],
     ['uploadMaxBytes', config.uploadMaxBytes],
     ['uploadTtlMs', config.uploadTtlMs],
     ['sweepIntervalMs', config.sweepIntervalMs],
@@ -83,13 +90,16 @@ export function apply(ctx: any, config: DocsConfig): void {
   ] as const) {
     assertPositiveInteger(value, label)
   }
+  if (!Number.isInteger(config.maxUploadBytesPerSession) || config.maxUploadBytesPerSession < 0) {
+    throw new Error('dsh-files: maxUploadBytesPerSession must be a non-negative integer')
+  }
 
   const cache = new ParseCache(config.cacheEntries, config.cacheMaxBytes)
 
   ctx.systemPrompt.section({
     name: 'tool:read-document',
     order: 110,
-    text: 'Use the read_document tool to read PDF, DOCX and XLSX documents that the plain read tool cannot handle; it also reads plain text files. Use offset and limit to page through long documents.'
+    text: 'read_document reads PDF/DOCX/XLSX (and plain text) the read tool cannot; page with offset/limit, list_sheets then sheet=N for XLSX.'
   })
 
   ctx.tools.register(
@@ -99,13 +109,18 @@ export function apply(ctx: any, config: DocsConfig): void {
         readLimit: config.readLimit,
         maxFileBytes: config.maxFileBytes,
         sheetRowLimit: config.sheetRowLimit,
-        maxSheets: config.maxSheets
+        maxSheets: config.maxSheets,
+        maxOutputChars: config.maxOutputChars
       },
       cache
     )
   )
 
   const defaultDir = config.uploadDir ?? join(process.cwd(), 'uploads')
+  const sessionCwd = (sessionId: string) => {
+    const session = ctx.sessions.get(sessionId)
+    return session === undefined ? undefined : session.header.cwd
+  }
   ctx.effect(() =>
     ctx.webServer.register({
       kind: 'prefix',
@@ -116,11 +131,9 @@ export function apply(ctx: any, config: DocsConfig): void {
         ttlMs: config.uploadTtlMs,
         sweepIntervalMs: config.sweepIntervalMs,
         maxConcurrent: config.maxConcurrentUploads,
+        maxSessionBytes: config.maxUploadBytesPerSession,
         defaultDir,
-        sessionCwd: (sessionId) => {
-          const session = ctx.sessions.get(sessionId)
-          return session === undefined ? undefined : session.header.cwd
-        }
+        sessionCwd
       })
     })
   )

@@ -69,9 +69,11 @@ test('binary with NUL bytes is rejected', () => {
   assert.equal(sniffFormat(bytes), null)
 })
 
-test('empty and tiny inputs are rejected', () => {
-  assert.equal(sniffFormat(new Uint8Array(0)), null)
-  assert.equal(sniffFormat(new Uint8Array([0x25, 0x50])), null)
+test('empty input is a valid empty text document', () => {
+  // 空文件是合法空文本：read_document 应能读（返回 0 行），而不是报
+  // "unrecognized file content"。短纯 ASCII 同理。
+  assert.equal(sniffFormat(new Uint8Array(0)), 'text')
+  assert.equal(sniffFormat(new Uint8Array([0x25, 0x50])), 'text')
 })
 
 test('hint is honored only when bytes are ambiguous', () => {

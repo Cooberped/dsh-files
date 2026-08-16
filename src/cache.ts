@@ -10,6 +10,10 @@ export interface CacheKey {
   targetKey: string
   version: string
   format: string
+  /** XLSX sheet 维度：按 sheet 单独缓存，互不污染。 */
+  sheet?: number
+  /** XLSX list_sheets 维度：列名结果与全量读取分开缓存。 */
+  listSheets?: boolean
 }
 
 export class ParseCache {
@@ -78,6 +82,6 @@ export class ParseCache {
   }
 
   private keyOf(key: CacheKey): string {
-    return `${key.targetKey}\u0000${key.version}\u0000${key.format}`
+    return `${key.targetKey}\u0000${key.version}\u0000${key.format}\u0000${key.sheet ?? ''}\u0000${key.listSheets === true ? 'list' : ''}`
   }
 }

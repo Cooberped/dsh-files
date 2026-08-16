@@ -64,3 +64,20 @@ test('constructor rejects invalid capacity', () => {
   assert.throws(() => new ParseCache(-1))
   assert.throws(() => new ParseCache(1.5))
 })
+
+test('sheet is part of the key', () => {
+  const cache = new ParseCache(4)
+  cache.set({ targetKey: 'a', version: 'v1', format: 'xlsx' }, 'merged')
+  cache.set({ targetKey: 'a', version: 'v1', format: 'xlsx', sheet: 2 }, 'sheet2')
+  assert.equal(cache.get({ targetKey: 'a', version: 'v1', format: 'xlsx' }), 'merged')
+  assert.equal(cache.get({ targetKey: 'a', version: 'v1', format: 'xlsx', sheet: 2 }), 'sheet2')
+  assert.equal(cache.get({ targetKey: 'a', version: 'v1', format: 'xlsx', sheet: 3 }), undefined)
+})
+
+test('listSheets is part of the key', () => {
+  const cache = new ParseCache(4)
+  cache.set({ targetKey: 'a', version: 'v1', format: 'xlsx' }, 'merged')
+  cache.set({ targetKey: 'a', version: 'v1', format: 'xlsx', listSheets: true }, 'sheet-list')
+  assert.equal(cache.get({ targetKey: 'a', version: 'v1', format: 'xlsx' }), 'merged')
+  assert.equal(cache.get({ targetKey: 'a', version: 'v1', format: 'xlsx', listSheets: true }), 'sheet-list')
+})

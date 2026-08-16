@@ -152,6 +152,32 @@ test('identical content deduplicates', async () => {
   )
 })
 
+test('identical content with different names stores one file and returns the existing path', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-files-fallback-'))
+  await withServer(
+    { maxBytes: 1024 * 1024, allowedExtensions: [], ttlMs: 60_000, sweepIntervalMs: 0, maxConcurrent: 4, defaultDir: dir, sessionCwd: () => dir },
+    async (base) => {
+      const first = await fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: { 'x-file-name': encodeURIComponent('a.txt') },
+        body: 'same bytes'
+      })
+      const second = await fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: { 'x-file-name': encodeURIComponent('b.txt') },
+        body: 'same bytes'
+      })
+      const a = (await first.json()) as { path: string; deduplicated?: boolean }
+      const b = (await second.json()) as { path: string; deduplicated?: boolean }
+      assert.equal(b.deduplicated, true)
+      // 第二次返回已存在文件的路径，模型读取不会 404。
+      assert.equal(a.path, b.path)
+      const files = await readdir(join(dir, '.dsh-filess', 'anonymous'))
+      assert.equal(files.length, 1)
+    }
+  )
+})
+
 test('DELETE refuses paths outside the session upload dir', async () => {
   const sessionDir = await mkdtemp(join(tmpdir(), 'dsh-files-session-'))
   const sessions = new Map([['s1', sessionDir]])
@@ -214,4 +240,90 @@ test('sweep removes expired files and emptied dirs, keeps fresh ones', async () 
 test('createSweeper with zero interval does nothing and returns a disposer', () => {
   const dispose = createSweeper('/nonexistent', 1000, 0)
   assert.equal(typeof dispose, 'function')
+})
+
+test('sanitizeFileName truncates by UTF-8 bytes, not characters', () => {
+  // 250 个中文字符 = 750 字节；按字符截断会超 255 字节文件系统上限。
+  const name = sanitizeFileName('中文文件名'.repeat(50))
+  assert.ok(Buffer.byteLength(name) <= 120, `bytes ${Buffer.byteLength(name)} > 120`)
+  assert.equal(name.length, 40) // 120 字节 / 每字 3 字节
+  assert.ok(name.endsWith('名')) // 不切半个字符
+  // ASCII 长名保持原有截断行为
+  assert.equal(sanitizeFileName('x'.repeat(200) + '.pdf').length, 120)
+})
+
+test('sanitizeFileName preserves the extension when truncating a long stem', () => {
+  // 长主干 + 扩展名：截断不能把 .pdf/.xlsx 切掉，否则 allowlist 与
+  // 客户端徽章会把文件当成无扩展名。
+  const name = sanitizeFileName('y'.repeat(300) + '.xlsx')
+  assert.ok(name.endsWith('.xlsx'), `expected .xlsx suffix, got "${name}"`)
+  assert.ok(Buffer.byteLength(name) <= 120)
+  // 中文长名 + 扩展名同样保留扩展名。
+  const cn = sanitizeFileName('中文文件名'.repeat(50) + '.pdf')
+  assert.ok(cn.endsWith('.pdf'), `expected .pdf suffix, got "${cn}"`)
+  assert.ok(Buffer.byteLength(cn) <= 120)
+})
+
+test('sanitizeFileName rejects pure dot names', () => {
+  assert.equal(sanitizeFileName('...'), 'upload.bin')
+  assert.equal(sanitizeFileName('..'), 'upload.bin')
+})
+
+test('upload response carries the byte-sniffed format', async () => {
+  await withServer(
+    { maxBytes: 1024 * 1024, allowedExtensions: [], ttlMs: 60_000, sweepIntervalMs: 0, maxConcurrent: 4, defaultDir: await mkdtemp(join(tmpdir(), 'dsh-files-fallback-')) },
+    async (base) => {
+      // 扩展名撒谎：.txt 的真实内容是 PDF，嗅探必须胜出。
+      const pdf = await fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: { 'x-file-name': encodeURIComponent('notes.txt') },
+        body: '%PDF-1.7 fake'
+      })
+      assert.equal(pdf.status, 200)
+      const p = (await pdf.json()) as { sniffedFormat: string | null }
+      assert.equal(p.sniffedFormat, 'pdf')
+      // exe 伪装成 .pdf：嗅探为 null（已知二进制），客户端不会按扩展名着色。
+      const exe = await fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: { 'x-file-name': encodeURIComponent('photo.pdf') },
+        body: 'MZ\x90\x00\x03\x00\x00\x00\x04\x00'
+      })
+      assert.equal(exe.status, 200)
+      const e = (await exe.json()) as { sniffedFormat: string | null }
+      assert.equal(e.sniffedFormat, null)
+      // 普通文本
+      const txt = await fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: { 'x-file-name': encodeURIComponent('x.bin') },
+        body: 'hello world'
+      })
+      const t = (await txt.json()) as { sniffedFormat: string | null }
+      assert.equal(t.sniffedFormat, 'text')
+    }
+  )
+})
+
+test('session quota rejects oversize totals with 507', async () => {
+  const sessionDir = await mkdtemp(join(tmpdir(), 'dsh-files-session-'))
+  const sessions = new Map([['q1', sessionDir]])
+  await withServer(
+    { maxBytes: 1024 * 1024, allowedExtensions: [], ttlMs: 60_000, sweepIntervalMs: 0, maxConcurrent: 4, maxSessionBytes: 16, defaultDir: await mkdtemp(join(tmpdir(), 'dsh-files-fallback-')), sessionCwd: (id) => sessions.get(id) },
+    async (base) => {
+      const ok = await fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: { 'x-file-name': encodeURIComponent('a.txt'), 'x-session-id': 'q1' },
+        body: '0123456789abcdef'
+      })
+      assert.equal(ok.status, 200)
+      // 16 字节已满，再传 1 字节必须 507，且不落盘。
+      const over = await fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: { 'x-file-name': encodeURIComponent('b.txt'), 'x-session-id': 'q1' },
+        body: 'x'
+      })
+      assert.equal(over.status, 507)
+      const files = await readdir(join(sessionDir, '.dsh-filess', 'q1'))
+      assert.equal(files.length, 1)
+    }
+  )
 })
