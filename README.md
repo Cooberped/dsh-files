@@ -2,6 +2,9 @@
 
 DeepSeek Harness 双面插件（dual-face plugin）：一个包、一行 cordis 配置，为 Web UI 提供「文件上传」与「文档读取」两项能力。
 
+![Uploading PixPin_2026-08-16_22-45-12.png…]()
+
+
 - **上传**：输入框工具栏回形针按钮，文件以浮动彩色卡片呈现，发送时自动把路径附入消息；按会话隔离存储到 `<会话工作区>/.dsh-filess/<sessionId>/`，TTL 定期清扫，sha256 内容去重
 - **文档读取**：`read_document` 工具读取文本 / PDF / DOCX / XLSX，内容嗅探判定真实格式（不信任扩展名），大小预检，LRU 解析缓存
 
