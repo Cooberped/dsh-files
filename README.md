@@ -1,5 +1,9 @@
 # dsh-files
 
+<p align="center">
+  <img src="assets/composer.png" alt="Paperclip upload button in the DeepSeek Harness composer" width="900">
+</p>
+
 DeepSeek Harness 双面插件（dual-face plugin）：一个包、一行 cordis 配置，为 Web UI 提供「文件上传」与「文档读取」两项能力。
 
 ![Uploading PixPin_2026-08-16_22-45-12.png…]()

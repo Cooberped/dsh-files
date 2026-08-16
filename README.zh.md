@@ -1,5 +1,9 @@
 # dsh-files
 
+<p align="center">
+  <img src="assets/composer.png" alt="输入框回形针上传按钮" width="900">
+</p>
+
 DeepSeek Harness 双面插件：一个包、一行 cordis 配置，提供「文件上传」与「文档读取」两项能力。
 
 - **上传**：回形针按钮 + 浮动彩色卡片，发送时自动附入文件路径；按会话隔离存储，TTL 清扫，sha256 去重
