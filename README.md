@@ -21,6 +21,11 @@ DeepSeek Harness 双面插件（dual-face plugin）。两项能力：
 
 - 会话隔离存储：文件落在发起会话自己的工作区 `.dsh-filess/<sessionId>/` 下，agent 的 fs 后端一定能读到；会话之间互不可见
 - 三种入口：输入框工具栏回形针按钮选择文件（多选），或旁边的文件夹按钮选择整个目录（浏览器递归展平、按子目录层级保留相对路径），或直接把文件/文件夹拖到页面任意位置（拖拽悬停有遮罩提示）；批量上传有界并发（4），逐文件失败不阻塞其余文件
+
+<p align="center">
+  <img src="assets/upload-entry.png" alt="DeepSeek Harness composer: paperclip for files, folder button for an entire directory, drag-and-drop anywhere" width="900">
+</p>
+
 - `@` 文件候选：在输入框输入 `@` 立即列出本会话已上传的文件，选中即把路径引用插入消息，模型据此调 `read_document`
 - 浮动彩色卡片：按**字节嗅探的真实格式**着色（PDF 红 / DOC 蓝 / XLS 绿 / TXT 灰），伪装文件（exe 改 .pdf）不按扩展名显示；文件名、大小、移除按钮
 - 发送联动：卡片挂载后文件路径自动注入输入框，随消息发出
