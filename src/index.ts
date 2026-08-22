@@ -11,6 +11,7 @@ import z from '@deepseek-ai/schemastery'
 import { defineReadDocumentTool } from './tool.ts'
 import { createUploadHandler, createSweeper } from './upload.ts'
 import { ParseCache } from './cache.ts'
+import { parseHost } from './guard.ts'
 
 /** Cordis plugin name — must match the row id in cordis.patch.yml. */
 export const name = 'dsh-files'
@@ -39,6 +40,8 @@ export interface DocsConfig {
   uploadDir: string
   /** read_document 单次执行超时（ms）。 */
   readTimeoutMs: number
+  /** 额外信任的上传 Host（裸 host 匹配任意端口，host:port 精确匹配）；默认空 = 仅回环。 */
+  trustedHosts: string[]
 }
 
 export const Config = z.object({
@@ -70,7 +73,9 @@ export const Config = z.object({
   maxUploadBytesPerSession: z.number().default(0),
   /** Upload storage root; files land in <root>/.dsh-filess/<sessionId>/. */
   uploadDir: z.string().default(join(process.cwd(), 'uploads')),
-  readTimeoutMs: z.number().default(120_000)
+  readTimeoutMs: z.number().default(120_000),
+  /** 信任的额外上传 Host，兼容公网域名/反向隧道部署（`dsh web --trusted-host` 同源语义）。 */
+  trustedHosts: z.array(z.string()).default([])
 })
 
 function assertPositiveInteger(value: number, label: string): void {
@@ -95,6 +100,12 @@ export function apply(ctx: any, config: DocsConfig): void {
   }
   if (!Number.isInteger(config.maxUploadBytesPerSession) || config.maxUploadBytesPerSession < 0) {
     throw new Error('dsh-files: maxUploadBytesPerSession must be a non-negative integer')
+  }
+  // 启动时校验 trustedHosts 条目，拼写错误 loud fail（对齐官方 assertTrustedAuthority）。
+  for (const entry of config.trustedHosts) {
+    if (parseHost(entry) === null) {
+      throw new Error(`dsh-files: trustedHosts entry "${entry}" is not a valid host (expected "example.com" or "example.com:443")`)
+    }
   }
 
   const cache = new ParseCache(config.cacheEntries, config.cacheMaxBytes)
@@ -136,6 +147,7 @@ export function apply(ctx: any, config: DocsConfig): void {
         sweepIntervalMs: config.sweepIntervalMs,
         maxConcurrent: config.maxConcurrentUploads,
         maxSessionBytes: config.maxUploadBytesPerSession,
+        trustedHosts: config.trustedHosts,
         defaultDir,
         sessionCwd
       })

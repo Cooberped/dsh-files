@@ -229,9 +229,11 @@ export function defineReadDocumentTool(ctx: {
           'FS_TOO_LARGE'
         )
       }
-      // 分阶段读取：先读 64 KiB 头部判定格式。头部证据不足（非 zip/pdf/text/已知二进制）
-      // 且无显式 format 时立即拒绝，不读全量字节（大文件省去无谓 IO 与内存峰值）。
-      const head = await ctx.fs.readBytes(target, exec.signal, HEAD_SNIFF_BYTES)
+      // readBytes 的 maxBytes 是整个文件上限：底层 stat 后若 size > maxBytes
+      // 直接抛 FS_TOO_LARGE，不做截断。因此不能先按 64 KiB 嗅探头部——那会把
+      // 任何更大的文件挡在门外。一次读满 maxFileBytes，格式判定从缓冲头部截取。
+      const bytes = await ctx.fs.readBytes(target, exec.signal, config.maxFileBytes)
+      const head = bytes.subarray(0, Math.min(HEAD_SNIFF_BYTES, bytes.length))
       const headFormat = sniffHead(head)
       if (headFormat === null && input.format === 'auto') {
         ctx.emit('fs/observed', target, { kind: 'present', version: info.version }, exec)
@@ -240,7 +242,6 @@ export function defineReadDocumentTool(ctx: {
           'FS_NOT_TEXT'
         )
       }
-      const bytes = await ctx.fs.readBytes(target, exec.signal, config.maxFileBytes)
       // zip 需要中央目录（在文件尾部）才能区分 docx/xlsx；
       // headFormat 为 null 只发生在显式 format 场景，走完整嗅探兜底。
       // auto 模式下的 hint 取扩展名：字节完全未知时（且非已知二进制）

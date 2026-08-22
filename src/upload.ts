@@ -36,6 +36,8 @@ export interface UploadOptions {
   sessionCwd?: (sessionId: string) => string | undefined | Promise<string | undefined>
   /** Fallback storage root when no sessions service is available. */
   defaultDir: string
+  /** 额外信任的上传 Host（裸 host 匹配任意端口，host:port 精确匹配）；默认仅回环。 */
+  trustedHosts?: string[]
   now?: () => number
 }
 
@@ -125,6 +127,7 @@ export function createUploadHandler(options: UploadOptions) {
     maxSessionBytes = 0,
     sessionCwd,
     defaultDir,
+    trustedHosts = [],
     now = () => Date.now()
   } = options
 
@@ -315,7 +318,7 @@ export function createUploadHandler(options: UploadOptions) {
       res.end('method not allowed')
       return
     }
-    const denied = networkGuard(req)
+    const denied = networkGuard(req, trustedHosts)
     if (denied !== null) {
       res.writeHead(403)
       res.end(denied)

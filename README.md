@@ -20,7 +20,7 @@ DeepSeek Harness 双面插件（dual-face plugin）。两项能力：
 ### 上传
 
 - 会话隔离存储：文件落在发起会话自己的工作区 `.dsh-filess/<sessionId>/` 下，agent 的 fs 后端一定能读到；会话之间互不可见
-- 两种入口：输入框工具栏回形针按钮选择，或直接把文件拖到页面任意位置（拖拽悬停有遮罩提示）；多文件横排
+- 三种入口：输入框工具栏回形针按钮选择文件（多选），或旁边的文件夹按钮选择整个目录（浏览器递归展平、按子目录层级保留相对路径），或直接把文件/文件夹拖到页面任意位置（拖拽悬停有遮罩提示）；批量上传有界并发（4），逐文件失败不阻塞其余文件
 - `@` 文件候选：在输入框输入 `@` 立即列出本会话已上传的文件，选中即把路径引用插入消息，模型据此调 `read_document`
 - 浮动彩色卡片：按**字节嗅探的真实格式**着色（PDF 红 / DOC 蓝 / XLS 绿 / TXT 灰），伪装文件（exe 改 .pdf）不按扩展名显示；文件名、大小、移除按钮
 - 发送联动：卡片挂载后文件路径自动注入输入框，随消息发出
@@ -78,7 +78,10 @@ dsh plugin --profile web add dsh-files
     maxConcurrentUploads: 4       # 并发上传数
     maxUploadBytesPerSession: 0   # 每会话存储配额（0 = 不限）
     uploadDir: /abs/path          # 无 sessions 服务时的回退上传根目录
+    trustedHosts: []              # 额外信任的上传 Host，如 dsh.example.com 或 dsh.example.com:443（裸 host 匹配任意端口）；默认空 = 仅回环（127.0.0.1/localhost/[::1]）
 ```
+
+`trustedHosts` 与 `dsh web --trusted-host` 同源语义：通过公网域名 / 反向隧道（Caddy、frp）部署时，浏览器 Origin 是 `https://域名` 而上游已终结 TLS，主服务栅栏放行但上传栅栏的 loopback-only 检查会静默 403（旧版回形针点了没反应）。把部署域名加进 `trustedHosts` 后上传恢复正常；Origin 校验只比较 host 部分，兼容上游 TLS 终结。
 
 ## 开发
 

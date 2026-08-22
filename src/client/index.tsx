@@ -4,10 +4,14 @@
 // always resolve them.
 
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { Tooltip, IconPaperclipOutline16, IconCloseOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Tooltip, IconPaperclipOutline16, IconCloseOutline16, IconFolderOpenOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
 
 const SOURCE_NAME = 'dsh-files'
 const STYLE_TAG = 'dsh-files/style.css'
+// 文件夹拖入/选中时，逐文件上传的有界并发上限。
+// 服务端 maxConcurrentUploads 默认 4：超过会被 429，这里取同值，
+// 避免整批重试；并发不提升网络吞吐，只消除「串行等待」的排队墙钟时间。
+const UPLOAD_CONCURRENCY = 4
 
 interface UploadMeta {
   name: string
@@ -91,7 +95,7 @@ function injectCss(): void {
 .dsh-files-error{display:inline-flex;align-items:center;gap:8px;max-width:100%;border:1px solid var(--dsw-alias-border-l2-darkmode-thin,rgba(127,127,127,.22));background:var(--dsw-alias-interactive-bg-hover-danger,rgba(216,97,97,.14));color:var(--dsw-alias-state-error-primary,#d86161);border-radius:10px;padding:6px 8px 6px 10px;font-size:13px}
 .dsh-files-error-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:420px}
 .uV2eYG_chip:has(> .uV2eYG_chipLabel:empty){visibility:hidden}
-body.dsh-files-dragging:after{content:'松开以上传文件';position:fixed;inset:0;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:600;color:#fff;background:rgba(0,0,0,.45);z-index:9999;pointer-events:none;text-shadow:0 1px 4px rgba(0,0,0,.5)}
+body.dsh-files-dragging:after{content:'松开以上传文件或文件夹';position:fixed;inset:0;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:600;color:#fff;background:rgba(0,0,0,.45);z-index:9999;pointer-events:none;text-shadow:0 1px 4px rgba(0,0,0,.5)}
 `
   document.head.appendChild(tag)
 }
@@ -120,7 +124,7 @@ interface ActionContext {
 function httpErrorText(status: number): string {
   if (status === 413) return '文件超过大小限制'
   if (status === 415) return '文件类型不被允许'
-  if (status === 403) return '会话校验失败，请刷新页面重试'
+  if (status === 403) return '上传被服务器拒绝：非本机/受信来源'
   if (status === 429) return '上传太频繁，请稍后再试'
   if (status === 507) return '会话存储配额已满，请删除一些文件'
   return `HTTP ${status}`
@@ -147,6 +151,68 @@ async function insertReference(actx: ActionContext, ref: string, label: string):
   })
   const after = input.state.getSnapshot()
   return after.occurrences.some((o) => o.source === SOURCE_NAME && o.ref === ref)
+}
+
+/**
+ * 以有界并发上传一组文件（文件夹递归收集后的结果）。
+ * 服务端并发上限（默认 4）外的请求会 429，这里同值并发避免整批失败；
+ * 逐文件错误照常进入 dock banner，成功项正常插入输入框。
+ */
+async function uploadMany(actx: ActionContext, files: readonly File[], sessionId: string): Promise<void> {
+  if (files.length === 0) return
+  let next = 0
+  const worker = async () => {
+    while (true) {
+      const i = next
+      next += 1
+      if (i >= files.length) return
+      try {
+        await attachFile(actx, files[i], sessionId)
+      } catch (err) {
+        setUploadError(err instanceof Error ? err.message : String(err))
+      }
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(UPLOAD_CONCURRENCY, files.length) }, () => worker())
+  )
+}
+
+/** 从 DataTransfer 提取文件；返回时目录项已被递归展平为具体文件。 */
+async function collectFiles(dt: DataTransfer | null): Promise<File[]> {
+  const files: File[] = []
+  if (dt === null) return files
+  const items = dt.items
+  const got = new Set<string>()
+  const visit = async (item: DataTransferItem): Promise<void> => {
+    const entry = item.webkitGetAsEntry?.()
+    if (entry === undefined || entry === null) {
+      // 非文件系统条目（普通文件）：直接取 file。
+      const file = item.getAsFile()
+      if (file !== null) files.push(file)
+      return
+    }
+    if (entry.isFile) {
+      const file = await new Promise<File | null>((resolve) => entry.file(resolve))
+      if (file !== null && !got.has(file.name)) {
+        got.add(file.name)
+        files.push(file)
+      }
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader()
+      // webkitGetAsEntry 的目录读取器每次 readEntries 最多返回约 100 项，
+      // 必须循环读到空数组为止（目录项多时一次读不全）。
+      while (true) {
+        const batch = await new Promise<FileSystemEntry[] | null>((resolve) => reader.readEntries(resolve))
+        if (batch === null || batch.length === 0) break
+        for (const child of batch) await visit(child as DataTransferItem)
+      }
+    }
+  }
+  for (const item of Array.from(items ?? [])) {
+    if (item.kind === 'file') await visit(item)
+  }
+  return files
 }
 
 async function attachFile(actx: ActionContext, file: File, sessionId: string): Promise<void> {
@@ -187,15 +253,19 @@ async function attachFile(actx: ActionContext, file: File, sessionId: string): P
 
 interface UploadButtonProps {
   attach: (file: File) => Promise<void>
+  /** 本会话作用域：文件夹/多文件上传与 @ 候选共用同一会话上下文。 */
+  scope: (files: readonly File[]) => Promise<void>
 }
 
-function UploadButton({ attach }: UploadButtonProps) {
+function UploadButton({ attach, scope }: UploadButtonProps) {
   const [busy, setBusy] = useState(false)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const attachRef = useRef(attach)
   attachRef.current = attach
+  const scopeRef = useRef(scope)
+  scopeRef.current = scope
 
-  // 整页拖拽上传：drop 任意文件走同一上传管线（attachRef 保证监听不重挂）。
+  // 整页拖拽上传：drop 任意文件/文件夹走同一上传管线（scopeRef 保证监听不重挂）。
   useEffect(() => {
     let dragDepth = 0
     const isFileDrag = (e: DragEvent) => e.dataTransfer?.types.includes('Files') ?? false
@@ -214,19 +284,16 @@ function UploadButton({ attach }: UploadButtonProps) {
       if (dragDepth === 0) document.body.classList.remove('dsh-files-dragging')
     }
     const onDrop = (e: DragEvent) => {
-      const files = Array.from(e.dataTransfer?.files ?? [])
-      if (files.length === 0) return
       e.preventDefault()
       dragDepth = 0
       document.body.classList.remove('dsh-files-dragging')
       setBusy(true)
       void (async () => {
-        for (const file of files) {
-          try {
-            await attachRef.current(file)
-          } catch {
-            // per-file error surfaced via the dock banner
-          }
+        try {
+          const files = await collectFiles(e.dataTransfer ?? null)
+          if (files.length > 0) await scopeRef.current(files)
+        } catch (err) {
+          setUploadError(err instanceof Error ? err.message : String(err))
         }
         setBusy(false)
       })()
@@ -262,12 +329,38 @@ function UploadButton({ attach }: UploadButtonProps) {
       if (files.length === 0) return
       setBusy(true)
       void (async () => {
-        for (const file of files) {
-          try {
-            await attach(file)
-          } catch {
-            // per-file error surfaced via the dock banner
-          }
+        try {
+          await scopeRef.current(files)
+        } catch (err) {
+          setUploadError(err instanceof Error ? err.message : String(err))
+        }
+        setBusy(false)
+      })()
+    }
+    input.click()
+  }
+
+  // 文件夹选择：webkitdirectory 的文件选择器只认目录，选中后 input.files
+  // 已是递归展平的相对路径列表（含 webkitRelativePath），走同一上传管线。
+  const pickDir = () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.multiple = true
+    ;(input as HTMLInputElement & { webkitdirectory?: boolean }).webkitdirectory = true
+    input.style.display = 'none'
+    document.body.appendChild(input)
+    inputRef.current = input
+    input.onchange = () => {
+      const files = Array.from(input.files ?? [])
+      input.remove()
+      inputRef.current = null
+      if (files.length === 0) return
+      setBusy(true)
+      void (async () => {
+        try {
+          await scopeRef.current(files)
+        } catch (err) {
+          setUploadError(err instanceof Error ? err.message : String(err))
         }
         setBusy(false)
       })()
@@ -275,11 +368,18 @@ function UploadButton({ attach }: UploadButtonProps) {
     input.click()
   }
   return (
-    <Tooltip label={busy ? '上传中…' : '上传文件'} side="top">
-      <button type="button" className="dsh-files-btn" aria-label="上传文件" disabled={busy} onClick={pick}>
-        <IconPaperclipOutline16 size={14} />
-      </button>
-    </Tooltip>
+    <>
+      <Tooltip label={busy ? '上传中…' : '上传文件'} side="top">
+        <button type="button" className="dsh-files-btn" aria-label="上传文件" disabled={busy} onClick={pick}>
+          <IconPaperclipOutline16 size={14} />
+        </button>
+      </Tooltip>
+      <Tooltip label={busy ? '上传中…' : '上传文件夹'} side="top">
+        <button type="button" className="dsh-files-btn" aria-label="上传文件夹" disabled={busy} onClick={pickDir}>
+          <IconFolderOpenOutline16 size={14} />
+        </button>
+      </Tooltip>
+    </>
   )
 }
 
@@ -415,9 +515,14 @@ export function apply(ctx: {
         name: 'conversation.input.left',
         id: 'dsh-files-button',
         order: 0,
-        inject: (sessionId: string) => ({
-          attach: (file: File) => attachFile(ctx.sessions.scope(sessionId), file, sessionId)
-        })
+        inject: (sessionId: string) => {
+          const actx = ctx.sessions.scope(sessionId)
+          return {
+            attach: (file: File) => attachFile(actx, file, sessionId),
+            // 文件夹/多文件上传复用同一会话作用域（有界并发，见 uploadMany）。
+            scope: (files: readonly File[]) => uploadMany(actx, files, sessionId)
+          }
+        }
       },
       UploadButton
     )
