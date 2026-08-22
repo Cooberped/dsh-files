@@ -101,3 +101,12 @@ test('formatFromExtension covers the supported set', () => {
 test('SUPPORTED_FORMATS matches the enum union', () => {
   assert.deepEqual([...SUPPORTED_FORMATS].sort(), ['docx', 'pdf', 'text', 'xlsx'])
 })
+
+test('utf-16 without BOM is detected as text', () => {
+  // 'hi' UTF-16LE 无 BOM：68 00 69 00
+  const le = new Uint8Array([0x68, 0x00, 0x69, 0x00])
+  assert.equal(sniffFormat(le), 'text')
+  // UTF-16BE 无 BOM：00 68 00 69
+  const be = new Uint8Array([0x00, 0x68, 0x00, 0x69])
+  assert.equal(sniffFormat(be), 'text')
+})

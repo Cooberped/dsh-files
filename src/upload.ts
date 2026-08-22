@@ -63,14 +63,22 @@ export function sanitizeFileName(raw: string): string {
   const extBytes = Buffer.byteLength(ext)
   let bytes = 0
   let cut = stem.length
-  for (let i = 0; i < stem.length; i++) {
-    const code = stem.codePointAt(i) ?? 0
+  // 按字符（code point）迭代而不是按 code unit 遍历：codePointAt + i++ 会
+  // 在 astral 字符（emoji，4 字节）中途把切点停在代理对中间，切出孤立代理
+  // （\ud83d.pdf 这类损坏文件名）。for...of 每次给一个完整字符，ch.length
+  // 是该字符在 UTF-16 里的 code unit 数（astral=2, BMP=1），切点永远落在
+  // 完整字符边界。
+  let codeUnit = 0
+  for (const ch of stem) {
+    const code = ch.codePointAt(0) ?? 0
     const width = code > 0xffff ? 4 : code > 0x7ff ? 3 : code > 0x7f ? 2 : 1
+    const next = codeUnit + ch.length
     if (bytes + width > MAX_BYTES - extBytes) {
-      cut = i
+      cut = codeUnit
       break
     }
     bytes += width
+    codeUnit = next
   }
   const name = stem.slice(0, cut) + ext
   return name === '' ? 'upload.bin' : name
@@ -80,6 +88,21 @@ export function sanitizeFileName(raw: string): string {
 export function sanitizeSessionId(id: string): string {
   const cleaned = id.replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 80)
   return cleaned === '' ? 'anonymous' : cleaned
+}
+
+/**
+ * 上传文件的读取体量提示：给前端/后续读取一个「读起来贵不贵」的档位。
+ * 模型侧体量感知由 read_document 的 totalLines 承担，这里主要帮前端预览/预判成本。
+ */
+export function readHintFor(
+  sniffedFormat: string | null,
+  bytes: number
+): { cost: 'cheap' | 'moderate' | 'expensive'; estimatedChars: number } {
+  const cost = bytes > 8 * 1024 * 1024 ? 'expensive' : bytes > 1024 * 1024 ? 'moderate' : 'cheap'
+  // 仅文本可粗略估算可读字符（UTF-8 中文 <1 字/字节、ASCII 1:1），其它
+  // 格式文本量无法从字节直推，给一个保守默认。
+  const estimatedChars = sniffedFormat === 'text' ? Math.min(24000, Math.max(2000, Math.round(bytes * 0.6))) : 12000
+  return { cost, estimatedChars }
 }
 
 /** Whether any file in `dir` starts with `prefix` (the sha256 content digest). */
@@ -146,6 +169,9 @@ export function createUploadHandler(options: UploadOptions) {
         const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
         total += buf.length
         if (total > maxBytes) {
+          // 提前阻止继续缓冲，但要排空剩余请求体，否则 keep-alive 连接
+          // 会被未消费的 body 挂起，导致后续上传卡住。
+          req.resume()
           res.writeHead(413, { 'content-type': 'application/json' })
           res.end(JSON.stringify({ error: 'payload too large' }))
           return
@@ -213,7 +239,20 @@ export function createUploadHandler(options: UploadOptions) {
         deduplicated = true
         const entries = await readdir(storage.dir)
         const existing = entries.find((entry) => entry.startsWith(digest))
-        if (existing !== undefined) path = join(storage.dir, existing)
+        // 竞态保护：sweep 可能在 find 前一瞬删掉这个同 digest 文件，此时
+        // existing 为 undefined，返回一个不存在的路径会让模型读取 404。
+        // 回退为直接写入（wx 保原子）；EEXIST 则重新判定为去重成功。
+        if (existing !== undefined) {
+          path = join(storage.dir, existing)
+        } else {
+          deduplicated = false
+          try {
+            await writeFile(dest, data, { flag: 'wx' })
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException)?.code === 'EEXIST') deduplicated = true
+            else throw err
+          }
+        }
       }
       // 嗅探前移：上传时字节已在内存，顺手判定真实格式（不信任扩展名），
       // 客户端据此显示真实格式徽章，伪装文件一上传就暴露。
@@ -226,6 +265,7 @@ export function createUploadHandler(options: UploadOptions) {
           bytes: data.length,
           sessionId: storage.sessionId,
           sniffedFormat,
+          readHint: readHintFor(sniffedFormat, data.length),
           ...(deduplicated ? { deduplicated: true } : {})
         })
       )

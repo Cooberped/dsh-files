@@ -17,6 +17,9 @@ interface UploadMeta {
 }
 
 const uploadMeta = new Map<string, UploadMeta>()
+// @ 文件候选池：记录本浏览器会话已上传的全部文件（含未插入草稿的）。
+// 与 uploadMeta（卡片显示 + 只保留被引用项）分离，避免清理逻辑把未引用文件从候选里清掉。
+const uploadedPool = new Map<string, UploadMeta>()
 let uploadError: { seq: number; text: string } | null = null
 let errorSeq = 0
 const errorListeners = new Set<() => void>()
@@ -168,11 +171,13 @@ async function attachFile(actx: ActionContext, file: File, sessionId: string): P
   const payload = (await res.json()) as { path: string; name?: string; bytes?: number; sniffedFormat?: string | null }
   if (typeof payload.path !== 'string') throw new Error('missing path in response')
   const name = payload.name ?? file.name
-  uploadMeta.set(payload.path, {
+  const meta = {
     name,
     bytes: payload.bytes ?? file.size,
     sniffed: 'sniffedFormat' in payload ? (payload.sniffedFormat ?? null) : undefined
-  })
+  }
+  uploadMeta.set(payload.path, meta)
+  uploadedPool.set(payload.path, meta)
   clearUploadError()
   const inserted = await insertReference(actx, payload.path, '')
   if (!inserted) {
@@ -309,6 +314,7 @@ function UploadDock({ useInput, inputActions }: DockProps) {
     const next = draft.slice(0, offset) + draft.slice(end)
     inputActions?.setDraft(next)
     uploadMeta.delete(ref)
+    uploadedPool.delete(ref)
     void fetch(`/api/upload?path=${encodeURIComponent(ref)}`, { method: 'DELETE' }).catch(() => {})
   }
 
@@ -374,8 +380,29 @@ export function apply(ctx: {
     ctx.inputTriggers.registerSource({
       trigger: '@',
       name: SOURCE_NAME,
-      candidates: async () => [],
-      onPick: () => undefined,
+      order: 0,
+      showGroupTitle: false,
+      // @ 文件：列出本浏览器会话已上传的文件，选中后插入路径引用，模型据此调 read_document。
+      candidates: async () =>
+        Array.from(uploadedPool.entries()).map(([ref, meta]) => ({
+          name: meta.name,
+          description: `${formatBytes(meta.bytes)}${meta.sniffed ? ' · ' + meta.sniffed.toUpperCase() : ''}`,
+          value: ref
+        })),
+      onPick: (pick) => {
+        const p = pick as { candidate?: { value?: string; name?: string } }
+        const ref = p.candidate?.value
+        if (ref === undefined || ref === '') return undefined
+        return {
+          insert: {
+            source: SOURCE_NAME,
+            ref,
+            label: p.candidate?.name ?? nameFromPath(ref),
+            appearance: 'file',
+            clipboardText: ref
+          }
+        }
+      },
       codec: {
         clipboardText: (ref: string) => ref,
         serialize: async (ref: string) => ref

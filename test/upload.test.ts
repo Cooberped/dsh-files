@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { createUploadHandler, createSweeper, sanitizeFileName, sanitizeSessionId, sweep } from '../src/upload.ts'
+import { createUploadHandler, createSweeper, readHintFor, sanitizeFileName, sanitizeSessionId, sweep } from '../src/upload.ts'
 
 test('sanitizeFileName strips control chars, separators, dot segments and leading dots', () => {
   assert.equal(sanitizeFileName('..\\..\\etc\\passwd'), 'etc_passwd')
@@ -326,4 +326,14 @@ test('session quota rejects oversize totals with 507', async () => {
       assert.equal(files.length, 1)
     }
   )
+})
+
+test('readHintFor labels the read cost by size and format', () => {
+  assert.equal(readHintFor('text', 5000).cost, 'cheap')
+  assert.equal(readHintFor('text', 2 * 1024 * 1024).cost, 'moderate')
+  assert.equal(readHintFor('pdf', 20 * 1024 * 1024).cost, 'expensive')
+  // text 给字符估算、且不超过单次窗口上限；其它格式给保守默认。
+  const t = readHintFor('text', 10000)
+  assert.ok(t.estimatedChars >= 2000 && t.estimatedChars <= 24000)
+  assert.equal(readHintFor('pdf', 12345).estimatedChars, 12000)
 })

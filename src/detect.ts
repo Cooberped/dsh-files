@@ -36,7 +36,10 @@ export function zipMemberNames(bytes: Uint8Array): string[] | null {
   }
   if (eocd < 0) return null
   const readU16 = (off: number): number => bytes[off] | (bytes[off + 1] << 8)
-  const readU32 = (off: number): number => (bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16)) + bytes[off + 3] * 0x1000000
+  // ZIP 中央目录偏移是 UInt32（小端）。用 | 组合再 >>>0 转无符号，避免
+  // 高位字节把中间结果推进 32 位有符号负值导致读取错误。
+  const readU32 = (off: number): number =>
+    (bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] << 24)) >>> 0
   const count = readU16(eocd + 10)
   const cdOffset = readU32(eocd + 16)
   // 合法办公文档成员数远低于此；超限视为不可信归档，拒绝而非展开。
@@ -92,6 +95,24 @@ function looksLikeGb18030(bytes: Uint8Array): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * 无 BOM 的 UTF-16（ASCII 主导）识别：偶数长度 + 至少一半码元含零字节。
+ * 中文 UTF-16 文本码元常见非零高位而不会被命中（可保守），已知二进制由
+ * isKnownBinary 优先拒绝。
+ */
+function looksLikeUtf16NoBom(bytes: Uint8Array): boolean {
+  const n = Math.min(bytes.length, SNIFF_BYTES)
+  if (n < 4 || n % 2 !== 0) return false
+  const pairs = n / 2
+  let zeroEven = 0 // LE：每对码元的低字节为 0
+  let zeroOdd = 0 // BE：每对码元的高字节为 0
+  for (let i = 0; i < n; i += 2) {
+    if (bytes[i] === 0) zeroOdd++
+    if (bytes[i + 1] === 0) zeroEven++
+  }
+  return zeroEven > pairs * 0.5 || zeroOdd > pairs * 0.5
 }
 
 function looksLikeUtf8(bytes: Uint8Array): boolean {
@@ -180,6 +201,7 @@ export function sniffHead(bytes: Uint8Array): 'pdf' | 'text' | 'zip' | null {
   if (looksLikeUtf8(bytes)) return 'text'
   if (isKnownBinary(bytes)) return null
   if (looksLikeGb18030(bytes)) return 'text'
+  if (looksLikeUtf16NoBom(bytes)) return 'text'
   return null
 }
 
@@ -211,6 +233,7 @@ export function sniffFormat(bytes: Uint8Array, hint?: string): DocumentFormat | 
   // GB18030 兜底：中文场景常见的 GBK/GB2312 文件，UTF-8 fatal 判定失败后的
   // 合法文本候选。TextDecoder fatal 模式不产生替换字符，可解即为文本。
   if (looksLikeGb18030(bytes)) return 'text'
+  if (looksLikeUtf16NoBom(bytes)) return 'text'
   if (hint !== undefined && SUPPORTED_FORMATS.has(hint)) {
     // Unrecognized content: honor the caller's explicit override as a last
     // resort (the parser still validates the structure and will fail loudly

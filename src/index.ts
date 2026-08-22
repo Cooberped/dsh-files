@@ -1,5 +1,5 @@
-// dsh-files — a dual-face DeepSeek Harness plugin: one cordis row, one apply,
-// two capabilities:
+// dsh-files — a dual-face DeepSeek Harness plugin: one cordis row, one apply.
+// capabilities:
 //   1. read_document tool (host): sniffed-format text extraction for
 //      text/PDF/DOCX/XLSX with size pre-check and LRU parse cache.
 //   2. upload surface (host webServer + web client): composer paperclip that
@@ -37,6 +37,8 @@ export interface DocsConfig {
   maxConcurrentUploads: number
   maxUploadBytesPerSession: number
   uploadDir: string
+  /** read_document 单次执行超时（ms）。 */
+  readTimeoutMs: number
 }
 
 export const Config = z.object({
@@ -52,8 +54,8 @@ export const Config = z.object({
   cacheEntries: z.number().default(16),
   /** Parse-cache byte budget; large PDFs dominate retained memory. */
   cacheMaxBytes: z.number().default(64 * MEBIBYTE),
-  /** Per-call window character budget; the window is truncated with an explicit marker when exceeded. */
-  maxOutputChars: z.number().default(50000),
+  /** Per-call window character budget (text uses it in full; pdf/docx get half, xlsx three-quarters). The window is truncated with an explicit marker when exceeded. */
+  maxOutputChars: z.number().default(24000),
   /** Byte cap for one upload body. */
   uploadMaxBytes: z.number().default(24 * MEBIBYTE),
   /** Lowercase extension allowlist for uploads; empty means all allowed. */
@@ -67,7 +69,8 @@ export const Config = z.object({
   /** Per-session storage byte quota; 0 disables the check. */
   maxUploadBytesPerSession: z.number().default(0),
   /** Upload storage root; files land in <root>/.dsh-filess/<sessionId>/. */
-  uploadDir: z.string().default(join(process.cwd(), 'uploads'))
+  uploadDir: z.string().default(join(process.cwd(), 'uploads')),
+  readTimeoutMs: z.number().default(120_000)
 })
 
 function assertPositiveInteger(value: number, label: string): void {
@@ -99,7 +102,7 @@ export function apply(ctx: any, config: DocsConfig): void {
   ctx.systemPrompt.section({
     name: 'tool:read-document',
     order: 110,
-    text: 'read_document reads PDF/DOCX/XLSX (and plain text) the read tool cannot; page with offset/limit, list_sheets then sheet=N for XLSX.'
+    text: 'read_document reads PDF/DOCX/XLSX/text the read tool cannot. For large docs: probe structure first (list_sheets, or a small first window), then page with offset/limit; read only what the task needs, then stop.'
   })
 
   ctx.tools.register(
@@ -110,7 +113,8 @@ export function apply(ctx: any, config: DocsConfig): void {
         maxFileBytes: config.maxFileBytes,
         sheetRowLimit: config.sheetRowLimit,
         maxSheets: config.maxSheets,
-        maxOutputChars: config.maxOutputChars
+        maxOutputChars: config.maxOutputChars,
+        readTimeoutMs: config.readTimeoutMs
       },
       cache
     )

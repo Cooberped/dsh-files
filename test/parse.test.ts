@@ -239,3 +239,10 @@ test('empty text decodes as an empty document', () => {
   assert.equal(w.totalLines, 1)
   assert.deepEqual(w.lines, [{ number: 1, text: '' }])
 })
+
+test('utf-16le without BOM decodes as a fallback', () => {
+  // 'hi' 的 UTF-16LE（无 BOM）：68 00 69 00。UTF-8/GB18030 解出会带 NUL，
+  // 被拒绝后走无 BOM UTF-16 兜底。
+  const bytes = new Uint8Array([0x68, 0x00, 0x69, 0x00])
+  assert.equal(decodeText(bytes), 'hi')
+})

@@ -4,13 +4,34 @@
 // sniffing (never trusts extensions), size pre-check before reading bytes, and
 // an LRU parse cache keyed on (targetKey, version, format).
 
-import z from '@deepseek-ai/schemastery'
+import { createHash } from 'node:crypto'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { FsError, type FsTarget, type FsVersion } from '@deepseek-ai/dsh-fs'
 import { sniffFormat, sniffHead, HEAD_SNIFF_BYTES, SUPPORTED_FORMATS, formatFromExtension, type DocumentFormat } from './detect.ts'
 import { parseDocument, type ParseOptions } from './parse/index.ts'
 import { windowLines } from './parse/text.ts'
 import { ParseCache } from './cache.ts'
+
+function hashBytes(buf: Uint8Array | string): string {
+  return createHash('sha256').update(typeof buf === 'string' ? buf : Buffer.from(buf)).digest('hex')
+}
+
+/**
+ * 单次 read_document 窗口的字符预算。按格式分级：
+ * - text：需要逐行精确定位（代码/配置），用满基础预算。
+ * - xlsx：按 sheet/row 天然受限，用满基础预算。
+ * - pdf/docx：叙述性流式文本，模型通常只需关键段落，一次塞满会把上下文
+ *   稀释并推高 token 成本；给基础预算的一半，配合 windowLines 的截断标记
+ *   引导模型用 offset/limit 翻页增量获取。
+ */
+export function formatOutputBudget(format: DocumentFormat, base: number): number {
+  // pdf/docx：叙述性流式文本，模型通常只需关键段落，减半防上下文稀释。
+  if (format === 'pdf' || format === 'docx') return Math.max(2000, Math.floor(base / 2))
+  // xlsx：结构化表格信息密度高，但行多列宽也会撑爆上下文；给 3/4，配合
+  // windowLines 的截断标记引导模型 offset 翻页增量取。
+  if (format === 'xlsx') return Math.max(2000, Math.floor(base * 0.75))
+  return base
+}
 
 export interface ReadDocumentConfig {
   readLimit: number
@@ -19,6 +40,8 @@ export interface ReadDocumentConfig {
   maxSheets: number
   /** 单次输出字符预算：超长行按字符截断，防止一次 read_document 撑爆上下文。 */
   maxOutputChars: number
+  /** read_document 单次执行的超时上限（ms）。大 PDF 解析可能超默认值。 */
+  readTimeoutMs?: number
 }
 
 interface ParsedArgs {
@@ -95,15 +118,10 @@ async function parseDocumentWithAbort(
 }
 
 function renderContent(path: string, format: string, value: { offset: number; lines: Array<{ number: number; text: string }>; totalLines: number }): string {
-  // 模型看到的正文：完整窗口的行文本。
-  // 行号策略按格式分化：text（代码/配置）保留行号供精确定位；
-  // pdf/docx/xlsx 是段落/表格流，行号是纯噪音，去掉省 token（每行 ~5 字符）。
   const numbered = format === 'text'
   const body = value.lines.map((l) => (numbered ? `${l.number}: ${l.text}` : l.text)).join('\n')
-  return [
-    `### document ${path} (${format}) — offset ${value.offset}, ${value.lines.length}/${value.totalLines} lines`,
-    body
-  ].join('\n')
+  const header = `### document ${path} (${format}) — offset ${value.offset}, ${value.lines.length}/${value.totalLines} lines`
+  return [header, body].filter((s) => s.length > 0).join('\n')
 }
 
 export function defineReadDocumentTool(ctx: {
@@ -117,7 +135,7 @@ export function defineReadDocumentTool(ctx: {
   return defineTool({
     name: 'read_document',
     description:
-      'Read text, PDF, DOCX or XLSX files the plain read tool cannot handle; returns line-numbered pages. Page with offset/limit.',
+      'Read text/PDF/DOCX/XLSX the plain read tool cannot; page with offset/limit, list_sheets then sheet for XLSX.',
     parameters: {
       file_path: {
         type: 'string',
@@ -188,7 +206,7 @@ export function defineReadDocumentTool(ctx: {
     isConcurrencySafe: () => true,
     // PDF 解析可能很慢（大文件 + pdfjs），超时防止模型空等；
     // 具体数值由部署方通过 timeoutMs 配置（policy 层执行）。
-    timeoutMs: 120_000,
+    timeoutMs: config.readTimeoutMs ?? 120_000,
     async execute(args, exec) {
       const input = parseArgs(args, config)
       const cwd = sessionCwd(exec)
@@ -248,7 +266,7 @@ export function defineReadDocumentTool(ctx: {
           'FS_NOT_TEXT'
         )
       }
-      const cacheKey = { targetKey: target.targetKey, version: info.version, format, sheet: input.sheet, listSheets: input.listSheets }
+      const cacheKey = { targetKey: target.targetKey, version: hashBytes(bytes), format, sheet: input.sheet, listSheets: input.listSheets }
       let text = cache.get(cacheKey)
       if (text === undefined) {
         // 解析器不接受 AbortSignal；这里包装一层协作取消：
@@ -261,7 +279,7 @@ export function defineReadDocumentTool(ctx: {
         }, exec.signal)
         cache.set(cacheKey, text)
       }
-      const window = windowLines(text, input.offset, input.limit, config.maxOutputChars)
+      const window = windowLines(text, input.offset, input.limit, formatOutputBudget(format, config.maxOutputChars))
       ctx.emit('fs/observed', target, { kind: 'present', version: info.version }, exec)
       return {
         path: target.displayPath,
@@ -287,8 +305,6 @@ export function defineReadDocumentTool(ctx: {
         | { path: string; format: string; offset: number; totalLines: number; lines: Array<{ number: number; text: string }> }
         | undefined
       if (meta === undefined) return undefined
-      // text 是行语义（代码/配置）：投影为官方 read 卡片（行号/高亮/滚动）。
-      // pdf/docx/xlsx 是段落/表格流：generic 卡片展示文本即可，行号无意义。
       if (meta.format === 'text') {
         return {
           card: 'read',
