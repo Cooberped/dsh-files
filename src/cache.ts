@@ -18,6 +18,8 @@ export interface CacheKey {
 
 export class ParseCache {
   private readonly map = new Map<string, string>()
+  /** in-flight 解析去重：并发同 key 只解析一次，其余 await 同一 promise。 */
+  private readonly inflight = new Map<string, Promise<string>>()
   private readonly maxEntries: number
   private readonly maxBytes: number
   private bytes = 0
@@ -60,6 +62,36 @@ export class ParseCache {
       const evicted = this.map.get(oldest) as string
       this.bytes -= this.sizeOf(evicted)
       this.map.delete(oldest)
+    }
+  }
+
+  /**
+   * Get-or-compute with in-flight dedup: concurrent callers with the same key
+   * share one compute promise, so a large PDF is parsed once even when several
+   * agents page it simultaneously (isConcurrencySafe: true admits parallelism).
+   */
+  async getOrCompute(key: CacheKey, compute: () => Promise<string>): Promise<string> {
+    const k = this.keyOf(key)
+    const hit = this.map.get(k)
+    if (hit !== undefined) {
+      // Refresh recency.
+      this.map.delete(k)
+      this.map.set(k, hit)
+      return hit
+    }
+    const existing = this.inflight.get(k)
+    if (existing !== undefined) return existing
+    const running = (async () => {
+      const text = await compute()
+      this.set(key, text)
+      return text
+    })()
+    this.inflight.set(k, running)
+    try {
+      return await running
+    } finally {
+      // 只删自己的 promise：并发期间新来的调用会复用同一个，谁完成谁删。
+      if (this.inflight.get(k) === running) this.inflight.delete(k)
     }
   }
 

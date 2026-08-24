@@ -18,12 +18,48 @@ interface UploadMeta {
   bytes: number
   /** 真实字节嗅探结果；undefined = 旧 host 未返回该字段。 */
   sniffed?: string | null
+  /** 上传时所属会话；@ 候选只列当前会话的文件，避免跨会话泄漏。 */
+  sessionId: string
 }
 
 const uploadMeta = new Map<string, UploadMeta>()
 // @ 文件候选池：记录本浏览器会话已上传的全部文件（含未插入草稿的）。
 // 与 uploadMeta（卡片显示 + 只保留被引用项）分离，避免清理逻辑把未引用文件从候选里清掉。
+// 每条带 sessionId，候选按当前会话过滤。
 const uploadedPool = new Map<string, UploadMeta>()
+// @ 双源的第二源：工作区文件。缓存 30 秒且绑定会话（换会话即失效），
+// 避免每次 @ 都重建 BFS 索引，也避免把上一个会话的工作区文件串进当前会话。
+let currentSessionId = ''
+const WORKSPACE_CACHE_MS = 30_000
+let workspaceCache: { sessionId: string; files: Array<{ rel: string; name: string }>; at: number } | null = null
+
+interface WorkspaceFile {
+  rel: string
+  name: string
+}
+
+async function fetchWorkspaceFiles(): Promise<WorkspaceFile[]> {
+  if (currentSessionId === '') return []
+  const now = Date.now()
+  if (workspaceCache !== null && workspaceCache.sessionId === currentSessionId && now - workspaceCache.at < WORKSPACE_CACHE_MS) {
+    return workspaceCache.files
+  }
+  try {
+    const res = await fetch(`/api/workspace-files?session=${encodeURIComponent(currentSessionId)}`, {
+      headers: { accept: 'application/json' }
+    })
+    if (!res.ok) return []
+    const payload = (await res.json()) as { files?: string[] }
+    const files = Array.isArray(payload.files)
+      ? payload.files.map((rel) => ({ rel, name: nameFromPath(rel) }))
+      : []
+    workspaceCache = { sessionId: currentSessionId, files, at: now }
+    return files
+  } catch {
+    // 索引端点不可用（旧 host / 未挂载）时静默降级为仅上传源。
+    return []
+  }
+}
 let uploadError: { seq: number; text: string } | null = null
 let errorSeq = 0
 const errorListeners = new Set<() => void>()
@@ -74,6 +110,19 @@ function nameFromPath(path: string): string {
   return base === '' ? path : base
 }
 
+/**
+ * Whether a browser file is one of the raster formats the harness native
+ * visual pipeline accepts (JPEG/PNG/WebP/GIF). Image files take the native
+ * attachment rail (base64 → visual model); everything else stays on the local
+ * document path (read_document). Native check first (MIME), then extension,
+ * because dropped files sometimes carry an empty `type`.
+ */
+function isRasterImage(file: File): boolean {
+  const t = (file.type ?? '').toLowerCase()
+  if (t === 'image/png' || t === 'image/jpeg' || t === 'image/webp' || t === 'image/gif') return true
+  return /\.(png|jpe?g|webp|gif)$/.test(file.name.toLowerCase())
+}
+
 function injectCss(): void {
   if (typeof document === 'undefined') return
   if (document.querySelector(`style[data-plugin-css=${JSON.stringify(STYLE_TAG)}]`) !== null) return
@@ -109,11 +158,15 @@ interface InputSnapshot {
 interface InputService {
   for(actx: unknown): {
     state: { getSnapshot(): InputSnapshot }
+    /** Append ordered browser-owned draft image ids into this session's draft (native attachment rail). */
+    addImages(ids: string[]): boolean
   }
 }
 
 interface ConversationService {
   input: InputService
+  /** Register browser files as runtime draft images (native visual pipeline hands them to the model as base64 image_url). */
+  createDraftImages(files: File[]): Array<{ id: string }>
 }
 
 interface ActionContext {
@@ -167,7 +220,7 @@ async function uploadMany(actx: ActionContext, files: readonly File[], sessionId
       next += 1
       if (i >= files.length) return
       try {
-        await attachFile(actx, files[i], sessionId)
+        await attachFile(actx, files[i], sessionId, files[i].webkitRelativePath)
       } catch (err) {
         setUploadError(err instanceof Error ? err.message : String(err))
       }
@@ -184,28 +237,38 @@ async function collectFiles(dt: DataTransfer | null): Promise<File[]> {
   if (dt === null) return files
   const items = dt.items
   const got = new Set<string>()
-  const visit = async (item: DataTransferItem): Promise<void> => {
-    const entry = item.webkitGetAsEntry?.()
-    if (entry === undefined || entry === null) {
-      // 非文件系统条目（普通文件）：直接取 file。
-      const file = item.getAsFile()
-      if (file !== null) files.push(file)
+  const visit = async (item: DataTransferItem | FileSystemEntry): Promise<void> => {
+    // DataTransferItem（拖拽列表）与 FileSystemEntry（目录递归）是两种形状：
+    // 前者用 webkitGetAsEntry/getAsFile，后者直接用 isFile/isDirectory/createReader。
+    if ('webkitGetAsEntry' in item) {
+      const entry = item.webkitGetAsEntry?.()
+      if (entry === undefined || entry === null) {
+        const file = item.getAsFile()
+        if (file !== null) files.push(file)
+        return
+      }
+      await visit(entry)
       return
     }
-    if (entry.isFile) {
-      const file = await new Promise<File | null>((resolve) => entry.file(resolve))
-      if (file !== null && !got.has(file.name)) {
-        got.add(file.name)
-        files.push(file)
+    if (item.isFile) {
+      const file = await new Promise<File | null>((resolve) => item.file(resolve))
+      if (file !== null) {
+        // 去重键优先用 webkitRelativePath（含目录前缀）：同名不同目录的文件
+        // 都要保留，否则按 name 去重会静默丢一个。
+        const key = file.webkitRelativePath !== '' ? file.webkitRelativePath : file.name
+        if (!got.has(key)) {
+          got.add(key)
+          files.push(file)
+        }
       }
-    } else if (entry.isDirectory) {
-      const reader = entry.createReader()
+    } else if (item.isDirectory) {
+      const reader = item.createReader()
       // webkitGetAsEntry 的目录读取器每次 readEntries 最多返回约 100 项，
       // 必须循环读到空数组为止（目录项多时一次读不全）。
       while (true) {
         const batch = await new Promise<FileSystemEntry[] | null>((resolve) => reader.readEntries(resolve))
         if (batch === null || batch.length === 0) break
-        for (const child of batch) await visit(child as DataTransferItem)
+        for (const child of batch) await visit(child)
       }
     }
   }
@@ -215,11 +278,38 @@ async function collectFiles(dt: DataTransfer | null): Promise<File[]> {
   return files
 }
 
-async function attachFile(actx: ActionContext, file: File, sessionId: string): Promise<void> {
+async function attachFile(actx: ActionContext, file: File, sessionId: string, relPath?: string): Promise<void> {
+  // 图片走核心原生附件管线（createDraftImages → 草稿 id → addImages → 发送时转
+  // base64 image_url 给视觉模型），文档走本地路径 + read_document。这是「开关」：
+  // 按文件类型分流——视觉模型默认吃到原生图片，文本模型吃到本地文档。
+  // 任意原生准入失败（纯文本模型 / 无 conversation 服务）回退到本地路径。
+  if (isRasterImage(file)) {
+    const conversation = actx.get('conversation')
+    if (conversation !== undefined && typeof conversation.createDraftImages === 'function') {
+      try {
+        const drafts = conversation.createDraftImages([file])
+        const input = conversation.input.for(actx)
+        if (drafts.length > 0 && typeof input.addImages === 'function') {
+          const added = input.addImages(drafts.map((d) => d.id))
+          if (added) {
+            clearUploadError()
+            return
+          }
+        }
+      } catch {
+        // any native admission failure falls through to the legacy local path
+      }
+    }
+  }
   const res = await fetch('/api/upload', {
     method: 'POST',
     headers: {
       'x-file-name': encodeURIComponent(file.name),
+      // 文件夹上传时携带相对路径（webkitRelativePath 的目录前缀），
+      // 服务端据此在会话目录内保留子目录层级；单文件上传为空。
+      ...(relPath !== undefined && relPath !== ''
+        ? { 'x-file-relative-path': encodeURIComponent(relPath) }
+        : {}),
       'x-session-id': sessionId
     },
     body: file
@@ -240,7 +330,8 @@ async function attachFile(actx: ActionContext, file: File, sessionId: string): P
   const meta = {
     name,
     bytes: payload.bytes ?? file.size,
-    sniffed: 'sniffedFormat' in payload ? (payload.sniffedFormat ?? null) : undefined
+    sniffed: 'sniffedFormat' in payload ? (payload.sniffedFormat ?? null) : undefined,
+    sessionId
   }
   uploadMeta.set(payload.path, meta)
   uploadedPool.set(payload.path, meta)
@@ -413,9 +504,13 @@ function UploadDock({ useInput, inputActions }: DockProps) {
     while (end < draft.length && !/\s/.test(draft[end])) end += 1
     const next = draft.slice(0, offset) + draft.slice(end)
     inputActions?.setDraft(next)
+    const wasUpload = uploadMeta.has(ref)
     uploadMeta.delete(ref)
     uploadedPool.delete(ref)
-    void fetch(`/api/upload?path=${encodeURIComponent(ref)}`, { method: 'DELETE' }).catch(() => {})
+    // 只对上传文件发删除；工作区相对路径引用不触碰 host 存储。
+    if (wasUpload) {
+      void fetch(`/api/upload?path=${encodeURIComponent(ref)}`, { method: 'DELETE' }).catch(() => {})
+    }
   }
 
   return (
@@ -482,13 +577,29 @@ export function apply(ctx: {
       name: SOURCE_NAME,
       order: 0,
       showGroupTitle: false,
-      // @ 文件：列出本浏览器会话已上传的文件，选中后插入路径引用，模型据此调 read_document。
-      candidates: async () =>
-        Array.from(uploadedPool.entries()).map(([ref, meta]) => ({
-          name: meta.name,
-          description: `${formatBytes(meta.bytes)}${meta.sniffed ? ' · ' + meta.sniffed.toUpperCase() : ''}`,
-          value: ref
-        })),
+      // @ 双源：工作区文件（相对路径注入，agent 按 cwd 解析）+ 本会话已上传文件（绝对路径）。
+      // 工作区源在前、上传源在后；端点不可用时静默降级为仅上传源。
+      candidates: async () => {
+        const workspace = await fetchWorkspaceFiles()
+        const items: Array<Record<string, unknown>> = []
+        for (const file of workspace) {
+          items.push({
+            name: file.name,
+            description: `工作区 · ${file.rel}`,
+            value: file.rel
+          })
+        }
+        for (const [ref, meta] of uploadedPool.entries()) {
+          // 只列当前会话的文件：跨会话文件不进入本会话 @ 候选。
+          if (meta.sessionId !== currentSessionId) continue
+          items.push({
+            name: meta.name,
+            description: `${formatBytes(meta.bytes)}${meta.sniffed ? ' · ' + meta.sniffed.toUpperCase() : ''}`,
+            value: ref
+          })
+        }
+        return items
+      },
       onPick: (pick) => {
         const p = pick as { candidate?: { value?: string; name?: string } }
         const ref = p.candidate?.value
@@ -516,6 +627,8 @@ export function apply(ctx: {
         id: 'dsh-files-button',
         order: 0,
         inject: (sessionId: string) => {
+          // 捕获当前会话：@ 工作区候选按会话 cwd 索引。
+          currentSessionId = sessionId
           const actx = ctx.sessions.scope(sessionId)
           return {
             attach: (file: File) => attachFile(actx, file, sessionId),

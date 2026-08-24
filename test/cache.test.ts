@@ -81,3 +81,52 @@ test('listSheets is part of the key', () => {
   assert.equal(cache.get({ targetKey: 'a', version: 'v1', format: 'xlsx' }), 'merged')
   assert.equal(cache.get({ targetKey: 'a', version: 'v1', format: 'xlsx', listSheets: true }), 'sheet-list')
 })
+
+test('getOrCompute parses once and dedupes concurrent callers', async () => {
+  const cache = new ParseCache(4)
+  let computes = 0
+  const slow = async () => {
+    computes += 1
+    await new Promise((r) => setTimeout(r, 30))
+    return 'parsed'
+  }
+  const [a, b, c] = await Promise.all([
+    cache.getOrCompute(key('x', 'v1'), slow),
+    cache.getOrCompute(key('x', 'v1'), slow),
+    cache.getOrCompute(key('x', 'v1'), slow)
+  ])
+  assert.equal(computes, 1, '并发同 key 只解析一次')
+  assert.deepEqual([a, b, c], ['parsed', 'parsed', 'parsed'])
+  // 完成后再次调用走缓存，不再 compute
+  const again = await cache.getOrCompute(key('x', 'v1'), slow)
+  assert.equal(again, 'parsed')
+  assert.equal(computes, 1)
+})
+
+test('getOrCompute failure is not cached; next call retries', async () => {
+  const cache = new ParseCache(4)
+  let tries = 0
+  const flaky = async () => {
+    tries += 1
+    if (tries === 1) throw new Error('boom')
+    return 'ok'
+  }
+  await assert.rejects(() => cache.getOrCompute(key('y', 'v1'), flaky), /boom/)
+  const ok = await cache.getOrCompute(key('y', 'v1'), flaky)
+  assert.equal(ok, 'ok')
+  assert.equal(tries, 2)
+})
+
+test('getOrCompute still distinguishes keys', async () => {
+  const cache = new ParseCache(4)
+  let computes = 0
+  const count = async () => {
+    computes += 1
+    return 'x'
+  }
+  await Promise.all([
+    cache.getOrCompute(key('a', 'v1'), count),
+    cache.getOrCompute(key('b', 'v1'), count)
+  ])
+  assert.equal(computes, 2, '不同 key 各自解析')
+})

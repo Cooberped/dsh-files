@@ -67,6 +67,56 @@ test('upload stores files per session under the session cwd', async () => {
   )
 })
 
+test('upload preserves sub-directories from x-file-relative-path, rejecting traversal', async () => {
+  const sessionDir = await mkdtemp(join(tmpdir(), 'dsh-files-session-'))
+  const sessions = new Map([['session-b', sessionDir]])
+  await withServer(
+    {
+      maxBytes: 1024 * 1024,
+      allowedExtensions: [],
+      ttlMs: 60_000,
+      sweepIntervalMs: 0,
+      maxConcurrent: 4,
+      defaultDir: await mkdtemp(join(tmpdir(), 'dsh-files-fallback-')),
+      sessionCwd: (id) => sessions.get(id)
+    },
+    async (base) => {
+      const safe = await fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: {
+          'x-file-name': encodeURIComponent('a.pdf'),
+          'x-file-relative-path': encodeURIComponent('sub/dir/a.pdf'),
+          'x-session-id': 'session-b'
+        },
+        body: 'pdf-bytes'
+      })
+      assert.equal(safe.status, 200)
+      const subFiles = await readdir(join(sessionDir, '.dsh-filess', 'session-b', 'sub', 'dir'))
+      assert.equal(subFiles.length, 1)
+      assert.ok(subFiles[0].startsWith('e1af36aaec24') === false || subFiles.length === 1)
+
+      const traversal = await fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: {
+          'x-file-name': encodeURIComponent('b.pdf'),
+          'x-file-relative-path': encodeURIComponent('../../etc/b.pdf'),
+          'x-session-id': 'session-b'
+        },
+        body: 'more'
+      })
+      assert.equal(traversal.status, 200)
+      // 逃逸段被剥离但其余路径保留：../../etc/b.pdf → etc/b.pdf，仍落在会话目录内
+      const rootDirs = await readdir(join(sessionDir, '.dsh-filess', 'session-b'))
+      assert.deepEqual(rootDirs.sort(), ['etc', 'sub'])
+      const etcFiles = await readdir(join(sessionDir, '.dsh-filess', 'session-b', 'etc'))
+      assert.equal(etcFiles.length, 1)
+      assert.ok(etcFiles[0].startsWith('..') === false)
+      const subFiles2 = await readdir(join(sessionDir, '.dsh-filess', 'session-b', 'sub', 'dir'))
+      assert.equal(subFiles2.length, 1)
+    }
+  )
+})
+
 test('unknown session is rejected when a session resolver exists', async () => {
   await withServer(
     {

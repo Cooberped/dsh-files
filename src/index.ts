@@ -10,6 +10,7 @@ import { join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 import { defineReadDocumentTool } from './tool.ts'
 import { createUploadHandler, createSweeper } from './upload.ts'
+import { createWorkspaceFilesHandler, DEFAULT_IGNORED_DIRS, DEFAULT_IGNORED_EXTENSIONS, DEFAULT_IGNORED_FILES } from './workspace.ts'
 import { ParseCache } from './cache.ts'
 import { parseHost } from './guard.ts'
 
@@ -42,6 +43,10 @@ export interface DocsConfig {
   readTimeoutMs: number
   /** 额外信任的上传 Host（裸 host 匹配任意端口，host:port 精确匹配）；默认空 = 仅回环。 */
   trustedHosts: string[]
+  /** @ 工作区候选的最大深度（根为 0）。 */
+  workspaceMaxDepth: number
+  /** @ 工作区候选的最大文件数。 */
+  workspaceMaxFiles: number
 }
 
 export const Config = z.object({
@@ -75,7 +80,9 @@ export const Config = z.object({
   uploadDir: z.string().default(join(process.cwd(), 'uploads')),
   readTimeoutMs: z.number().default(120_000),
   /** 信任的额外上传 Host，兼容公网域名/反向隧道部署（`dsh web --trusted-host` 同源语义）。 */
-  trustedHosts: z.array(z.string()).default([])
+  trustedHosts: z.array(z.string()).default([]),
+  workspaceMaxDepth: z.number().default(12),
+  workspaceMaxFiles: z.number().default(500)
 })
 
 function assertPositiveInteger(value: number, label: string): void {
@@ -156,4 +163,24 @@ export function apply(ctx: any, config: DocsConfig): void {
 
   const disposeSweeper = createSweeper(defaultDir, config.uploadTtlMs, config.sweepIntervalMs)
   ctx.on('dispose', disposeSweeper)
+
+  // @ 工作区候选端点：只读返回当前会话 cwd 下的相对路径列表。
+  // 与上传端点同款网络护栏；client 侧 30s 缓存，索引上限默认 500 文件 / 12 层深。
+  ctx.effect(() =>
+    ctx.webServer.register({
+      kind: 'prefix',
+      path: '/api/workspace-files',
+      handler: createWorkspaceFilesHandler({
+        sessionCwd,
+        trustedHosts: config.trustedHosts,
+        indexOptions: {
+          ignoredDirs: DEFAULT_IGNORED_DIRS,
+          ignoredFiles: DEFAULT_IGNORED_FILES,
+          ignoredExtensions: DEFAULT_IGNORED_EXTENSIONS,
+          maxDepth: config.workspaceMaxDepth,
+          maxFiles: config.workspaceMaxFiles
+        }
+      })
+    })
+  )
 }

@@ -148,15 +148,15 @@ export function defineReadDocumentTool(ctx: {
         description: 'Optional format override; the sniffed content wins over this hint.'
       },
       offset: {
-        type: 'number',
+        type: 'integer',
         description: '1-based first line. Defaults to 1.'
       },
       limit: {
-        type: 'number',
+        type: 'integer',
         description: `Max lines to return. Defaults to ${config.readLimit}.`
       },
       sheet: {
-        type: 'number',
+        type: 'integer',
         description: '1-based worksheet to read in full (XLSX only).'
       },
       list_sheets: {
@@ -184,7 +184,10 @@ export function defineReadDocumentTool(ctx: {
               }
             }
           },
-          totalLines: { type: 'integer', required: true }
+          totalLines: { type: 'integer', required: true },
+          // execute 在 sheet 读取时返回该字段；schema 必须声明，
+          // 否则 additionalProperties:false 会把合法输出打成 INVALID_TOOL_OUTPUT。
+          sheet: { type: 'integer' }
         }
       },
       render: (_args, value) => [
@@ -268,18 +271,17 @@ export function defineReadDocumentTool(ctx: {
         )
       }
       const cacheKey = { targetKey: target.targetKey, version: hashBytes(bytes), format, sheet: input.sheet, listSheets: input.listSheets }
-      let text = cache.get(cacheKey)
-      if (text === undefined) {
+      // getOrCompute 自带 in-flight 去重：并发分页同一文件只解析一次。
+      const text = await cache.getOrCompute(cacheKey, () =>
         // 解析器不接受 AbortSignal；这里包装一层协作取消：
         // 信号触发时立即中止等待，符合 dsh 工具的取消契约。
-        text = await parseDocumentWithAbort(bytes, format, {
+        parseDocumentWithAbort(bytes, format, {
           sheetRowLimit: config.sheetRowLimit,
           maxSheets: config.maxSheets,
           sheet: input.sheet,
           listOnly: input.listSheets
         }, exec.signal)
-        cache.set(cacheKey, text)
-      }
+      )
       const window = windowLines(text, input.offset, input.limit, formatOutputBudget(format, config.maxOutputChars))
       ctx.emit('fs/observed', target, { kind: 'present', version: info.version }, exec)
       return {
