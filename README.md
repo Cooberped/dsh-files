@@ -1,3 +1,9 @@
+<div align="center">
+
+[English](README.md) | [简体中文](README.zh.md)
+
+</div>
+
 <p align="center">
   <img src="assets/readme/hero.svg" width="100%" alt="dsh-files: one package. A composer paperclip for uploads, a document-reading tool for the model, and native image support for vision models.">
 </p>

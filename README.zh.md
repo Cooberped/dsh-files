@@ -1,3 +1,9 @@
+<div align="center">
+
+[English](README.md) | [简体中文](README.zh.md)
+
+</div>
+
 <p align="center">
   <img src="assets/readme/hero.svg" width="100%" alt="dsh-files：一个包。Web UI 回形针上传，模型读文档，还能把图片喂给任何视觉模型。">
 </p>
