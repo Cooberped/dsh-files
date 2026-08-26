@@ -19,8 +19,8 @@ export async function validateSyntheticFixtureSet({
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
   assert(manifest.schemaVersion === 1, 'synthetic manifest schemaVersion must be 1')
   assert(manifest.privacy === 'synthetic-only', 'synthetic manifest must declare privacy=synthetic-only')
-  assert(Array.isArray(manifest.documents) && manifest.documents.length === 3, 'synthetic manifest must contain three documents')
-  assert(Array.isArray(manifest.cases) && manifest.cases.length >= 10, 'synthetic manifest must contain at least ten cases')
+  assert(Array.isArray(manifest.documents) && manifest.documents.length === 4, 'synthetic manifest must contain four documents')
+  assert(Array.isArray(manifest.cases) && manifest.cases.length >= 11, 'synthetic manifest must contain at least eleven cases')
 
   const ids = new Set()
   const canonicalNames = new Set()
@@ -67,7 +67,7 @@ export async function validateSyntheticFixtureSet({
       assert(typeof evidence.coordinate === 'string' && evidence.coordinate !== '', `${entry.id}: evidence coordinate is required`)
     }
   }
-  for (const required of ['exact-cell', 'cross-sheet', 'cross-file', 'sparse-sheet', 'ordered-cjk-phrase', 'single-cjk-character', 'ascii-number-mixed', 'negative']) {
+  for (const required of ['exact-cell', 'exact-slide', 'cross-sheet', 'cross-file', 'sparse-sheet', 'ordered-cjk-phrase', 'single-cjk-character', 'ascii-number-mixed', 'negative']) {
     assert(queryClasses.has(required), `missing required query class: ${required}`)
   }
   return { documents: ids.size, cases: caseIds.size, queryClasses: queryClasses.size, parsedById }

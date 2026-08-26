@@ -15,14 +15,16 @@ test('xlsx gets three-quarters of the base budget', () => {
   assert.equal(formatOutputBudget('xlsx', 24000), 18000)
 })
 
-test('pdf and docx get half the base budget', () => {
+test('pdf, docx and pptx get half the base budget', () => {
   assert.equal(formatOutputBudget('pdf', 24000), 12000)
   assert.equal(formatOutputBudget('docx', 24000), 12000)
+  assert.equal(formatOutputBudget('pptx', 24000), 12000)
 })
 
 test('the halving never drops below the floor for a tiny base', () => {
   assert.equal(formatOutputBudget('pdf', 3000), 2000) // Math.max(2000, floor(1500))
   assert.equal(formatOutputBudget('docx', 2000), 2000)
+  assert.equal(formatOutputBudget('pptx', 2000), 2000)
   assert.equal(formatOutputBudget('xlsx', 2000), 2000) // floor(1500) clamped to 2000
 })
 

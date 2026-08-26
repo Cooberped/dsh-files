@@ -15,11 +15,12 @@ test('synthetic benchmark fixtures are generated and satisfy the gold contract',
   assert.deepEqual(outputs.map((entry) => entry.name.normalize('NFC')), [
     'atlas-kickoff.pdf',
     '流程绩效-Café会议纪要.docx',
-    'atlas-metrics.xlsx'
+    'atlas-metrics.xlsx',
+    'atlas-strategy.pptx'
   ])
   const result = await validateSyntheticFixtureSet({ fixtureDir })
-  assert.equal(result.documents, 3)
-  assert.equal(result.cases, 10)
+  assert.equal(result.documents, 4)
+  assert.equal(result.cases, 11)
 })
 
 test('real benchmark validator refuses manifests stored inside the repository', async () => {

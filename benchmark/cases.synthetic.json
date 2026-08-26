@@ -20,6 +20,12 @@
       "file": "atlas-metrics.xlsx",
       "format": "xlsx",
       "markers": ["指标总览", "隐藏映射", "SPARSE-ANCHOR-200", "MET-TAX-01"]
+    },
+    {
+      "id": "strategy-pptx",
+      "file": "atlas-strategy.pptx",
+      "format": "pptx",
+      "markers": ["SYNTHETIC Atlas Strategy Deck", "STRAT-26", "Decision D-26", "Synthetic Strategy PMO"]
     }
   ],
   "cases": [
@@ -117,6 +123,16 @@
       "expected": {
         "facts": ["IPD", "Synthetic PMO"],
         "evidence": [{ "document": "metrics-xlsx", "coordinate": "流程域分工!A3:D3" }]
+      },
+      "forbiddenFacts": ["Synthetic HRBP"]
+    },
+    {
+      "id": "pptx-slide-notes",
+      "queryClass": "exact-slide",
+      "question": "演示文稿第 2 页的决策和 speaker notes 负责人是什么？",
+      "expected": {
+        "facts": ["Decision D-26", "Synthetic Strategy PMO"],
+        "evidence": [{ "document": "strategy-pptx", "coordinate": "slide:2" }]
       },
       "forbiddenFacts": ["Synthetic HRBP"]
     },

@@ -12,7 +12,8 @@ const casesPath = join(HERE, 'retrieval.synthetic.json')
 const documents = [
   { id: 'kickoff-pdf', file: 'atlas-kickoff.pdf', format: 'pdf' },
   { id: 'meeting-docx', file: '流程绩效-Café会议纪要.docx', format: 'docx' },
-  { id: 'metrics-xlsx', file: 'atlas-metrics.xlsx', format: 'xlsx' }
+  { id: 'metrics-xlsx', file: 'atlas-metrics.xlsx', format: 'xlsx' },
+  { id: 'strategy-pptx', file: 'atlas-strategy.pptx', format: 'pptx' }
 ]
 
 function assert(condition, message) {
@@ -56,7 +57,7 @@ export async function runSyntheticRetrievalBenchmark(kind) {
   const manifest = JSON.parse(await readFile(casesPath, 'utf8'))
   assert(manifest.schemaVersion === 1, 'retrieval benchmark schemaVersion must be 1')
   assert(manifest.privacy === 'synthetic-only', 'retrieval benchmark must be synthetic-only')
-  assert(Array.isArray(manifest.cases) && manifest.cases.length === 10, 'retrieval benchmark must contain ten cases')
+  assert(Array.isArray(manifest.cases) && manifest.cases.length === 11, 'retrieval benchmark must contain eleven cases')
   const loaded = await loadBlocks()
   const backend = makeBackend(kind)
   try {

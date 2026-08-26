@@ -98,6 +98,53 @@ async function makeDocx() {
   return zipBytes(zip)
 }
 
+function slideXml(title, body) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld><p:spTree><p:sp><p:txBody>
+    <a:p><a:r><a:t>${xml(title)}</a:t></a:r></a:p>
+    <a:p><a:r><a:t>${xml(body)}</a:t></a:r></a:p>
+  </p:txBody></p:sp></p:spTree></p:cSld>
+</p:sld>`
+}
+
+async function makePptx() {
+  const zip = new JSZip()
+  addZipText(zip, '[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+  <Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+  <Override PartName="/ppt/slides/slide2.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+  <Override PartName="/ppt/notesSlides/notesSlide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml"/>
+</Types>`)
+  addZipText(zip, '_rels/.rels', `<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>`)
+  addZipText(zip, 'ppt/presentation.xml', `<?xml version="1.0" encoding="UTF-8"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst><p:sldId id="256" r:id="rId1"/><p:sldId id="257" r:id="rId2"/></p:sldIdLst>
+</p:presentation>`)
+  addZipText(zip, 'ppt/_rels/presentation.xml.rels', `<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide2.xml"/>
+</Relationships>`)
+  addZipText(zip, 'ppt/slides/slide1.xml', slideXml('SYNTHETIC Atlas Strategy Deck', 'Strategy marker STRAT-26.'))
+  addZipText(zip, 'ppt/slides/slide2.xml', slideXml('Decision D-26', 'Project Atlas retrieval uses a private local index.'))
+  addZipText(zip, 'ppt/slides/_rels/slide2.xml.rels', `<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdNotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide1.xml"/>
+</Relationships>`)
+  addZipText(zip, 'ppt/notesSlides/notesSlide1.xml', `<?xml version="1.0" encoding="UTF-8"?>
+<p:notes xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Speaker note: review owner is Synthetic Strategy PMO.</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld>
+</p:notes>`)
+  return zipBytes(zip)
+}
+
 function inlineCell(ref, value) {
   return `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${xml(value)}</t></is></c>`
 }
@@ -182,7 +229,8 @@ export async function generateFixtures(outputDir = DEFAULT_FIXTURE_DIR) {
   const outputs = [
     ['atlas-kickoff.pdf', await makePdf()],
     [docxName, docxBytes],
-    ['atlas-metrics.xlsx', await makeXlsx()]
+    ['atlas-metrics.xlsx', await makeXlsx()],
+    ['atlas-strategy.pptx', await makePptx()]
   ]
   for (const [name, bytes] of outputs) await writeFile(join(outputDir, name), bytes)
   // On normalization-sensitive filesystems this creates a distinct alias; on

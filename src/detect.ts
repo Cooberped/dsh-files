@@ -6,11 +6,12 @@
 //   pdf   — "%PDF-" header
 //   docx  — ZIP archive whose central directory lists word/ members
 //   xlsx  — ZIP archive whose central directory lists xl/ members
+//   pptx  — ZIP archive whose central directory lists ppt/ members
 //   text  — UTF-8 (no NUL bytes) or UTF-16 with BOM
 
-export type DocumentFormat = 'pdf' | 'docx' | 'xlsx' | 'text'
+export type DocumentFormat = 'pdf' | 'docx' | 'xlsx' | 'pptx' | 'text'
 
-export const SUPPORTED_FORMATS: ReadonlySet<string> = new Set(['pdf', 'docx', 'xlsx', 'text'])
+export const SUPPORTED_FORMATS: ReadonlySet<string> = new Set(['pdf', 'docx', 'xlsx', 'pptx', 'text'])
 
 /** Null bytes in the first chunk defeat every text decoding we accept. */
 const SNIFF_BYTES = 8192
@@ -225,6 +226,7 @@ export function sniffFormat(bytes: Uint8Array, hint?: string): DocumentFormat | 
     if (names !== null) {
       if (names.some((name) => name.startsWith('word/'))) return 'docx'
       if (names.some((name) => name.startsWith('xl/'))) return 'xlsx'
+      if (names.some((name) => name.startsWith('ppt/'))) return 'pptx'
     }
     return null
   }
@@ -251,6 +253,7 @@ export function formatFromExtension(name: string): DocumentFormat | null {
   if (ext === 'pdf') return 'pdf'
   if (ext === 'docx') return 'docx'
   if (ext === 'xlsx') return 'xlsx'
+  if (ext === 'pptx') return 'pptx'
   if (ext === 'txt' || ext === 'md' || ext === 'csv' || ext === 'json' || ext === 'log' || ext === 'yml' || ext === 'yaml' || ext === 'toml' || ext === 'ini') return 'text'
   return null
 }

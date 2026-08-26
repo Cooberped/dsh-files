@@ -53,6 +53,11 @@
       "mustFind": [{ "document": "metrics-xlsx", "coordinate": "流程域分工!A3:D3", "facts": ["IPD", "Synthetic PMO"] }]
     },
     {
+      "id": "pptx-slide-notes",
+      "query": "Decision D-26 Synthetic Strategy PMO",
+      "mustFind": [{ "document": "strategy-pptx", "coordinate": "slide:2", "facts": ["Decision D-26", "Synthetic Strategy PMO"] }]
+    },
+    {
       "id": "negative-no-answer",
       "query": "Q4 budget",
       "mustFind": [{ "document": "kickoff-pdf", "coordinatePrefix": "page:3", "facts": ["No Q4 budget target is defined"] }]

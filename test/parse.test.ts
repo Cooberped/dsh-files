@@ -8,6 +8,7 @@ import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import { parsePdf } from '../src/parse/pdf.ts'
 import { parseDocx } from '../src/parse/docx.ts'
 import { parseXlsx } from '../src/parse/xlsx.ts'
+import { parsePptx } from '../src/parse/pptx.ts'
 import { parseDocument } from '../src/parse/index.ts'
 import { decodeText, windowLines } from '../src/parse/text.ts'
 
@@ -67,6 +68,38 @@ async function makeXlsx(rows: Array<Array<string | number>>): Promise<Uint8Array
   return new Uint8Array(await zip.generateAsync({ type: 'nodebuffer' }))
 }
 
+async function makePptx(): Promise<Uint8Array> {
+  const zip = new JSZip()
+  zip.file('[Content_Types].xml', '<?xml version="1.0"?><Types/>')
+  zip.file('ppt/presentation.xml', `<?xml version="1.0"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst><p:sldId id="300" r:id="rId7"/><p:sldId id="301" r:id="rId3"/></p:sldIdLst>
+</p:presentation>`)
+  zip.file('ppt/_rels/presentation.xml.rels', `<?xml version="1.0"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+  <Relationship Id="rId7" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide2.xml"/>
+</Relationships>`)
+  const slide = (title: string, body: string) => `<?xml version="1.0"?>
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld><p:spTree><p:sp><p:txBody>
+    <a:p><a:r><a:t>${title}</a:t></a:r></a:p>
+    <a:p><a:r><a:t>${body}</a:t></a:r><a:br/><a:r><a:t>After break</a:t></a:r></a:p>
+  </p:txBody></p:sp></p:spTree></p:cSld>
+</p:sld>`
+  zip.file('ppt/slides/slide1.xml', slide('Second logical slide', 'STRAT-02'))
+  zip.file('ppt/slides/slide2.xml', slide('First logical slide', 'STRAT-01'))
+  zip.file('ppt/slides/_rels/slide2.xml.rels', `<?xml version="1.0"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdNotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide4.xml"/>
+</Relationships>`)
+  zip.file('ppt/notesSlides/notesSlide4.xml', `<?xml version="1.0"?>
+<p:notes xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Speaker note N-17</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld>
+</p:notes>`)
+  return new Uint8Array(await zip.generateAsync({ type: 'nodebuffer' }))
+}
+
 test('pdf text extraction', async () => {
   const pdf = await makePdf('Hello PDF world')
   const text = await parsePdf(pdf)
@@ -84,6 +117,15 @@ test('docx text extraction', async () => {
   const text = await parseDocx(await makeDocx())
   assert.match(text, /First paragraph/)
   assert.match(text, /Second paragraph/)
+})
+
+test('pptx follows presentation order and includes speaker notes', async () => {
+  const text = await parsePptx(await makePptx())
+  assert.match(text, /^### Slide 1\nFirst logical slide/m)
+  assert.ok(text.indexOf('First logical slide') < text.indexOf('Second logical slide'))
+  assert.match(text, /STRAT-01\nAfter break/)
+  assert.match(text, /#### Speaker notes\nSpeaker note N-17/)
+  assert.match(text, /### Slide 2\nSecond logical slide/)
 })
 
 test('xlsx text extraction with row limit', async () => {
@@ -174,11 +216,12 @@ test('xlsx sheet parameter reads a single sheet in full', async () => {
   await assert.rejects(parseXlsx(bytes, { sheetRowLimit: 1, sheet: 9 }), /out of range/)
 })
 
-test('sheet 参数只对 xlsx 有意义，对 pdf/docx/text 显式报错而非静默忽略', async () => {
+test('sheet 参数只对 xlsx 有意义，对 pdf/docx/pptx/text 显式报错而非静默忽略', async () => {
   const pdfBytes = await makePdf('sheet n/a') // pdf-lib 标准字体只能编码 WinAnsi/拉丁文本
   for (const [bytes, label] of [
     [pdfBytes, 'pdf'],
     [await makeDocx(), 'docx'],
+    [await makePptx(), 'pptx'],
     [new TextEncoder().encode('plain'), 'text']
   ] as const) {
     await assert.rejects(

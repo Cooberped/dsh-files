@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.0-local.4（本机索引/PPTX 候选，未发布）
+
+### 新增
+
+- `search_documents` 支持省略 `query` 的索引模式：面向“先理解/准备这些文件，稍后再讨论”任务，只在本地建立版本化索引并返回紧凑文件清单，不把文档正文注入模型上下文；具体问题仍走原有短查询检索。
+- 原生读取与检索 PPTX：复用既有 `fflate + saxen`，按 `presentation.xml.rels` 的真实演示顺序提取 slide text 与 speaker notes，检索坐标为 `slide:N`，不再启动 Python 子进程。
+- 上传卡片按字节嗅探识别 PPTX 并显示 PowerPoint 徽标；系统提示将 PPTX 纳入受支持格式，显式禁止无错误时回退 shell/Python。
+- 纯合成 benchmark 扩展为 PDF/DOCX/XLSX/PPTX 4 份文档、11 个确定答案用例；SQLite FTS5 与 JS fallback 同时校验 `slide:N` 证据。
+
+### 边界
+
+- PPTX 当前提取文本框、表格等 DrawingML 文本及 speaker notes；图片内文字、图表数据、SmartArt 和嵌入对象尚未展开。
+- 无 query 索引模式不声称模型已把全文装入上下文；它为后续问题准备私有索引，具体回答仍按用户问题检索证据。
+- 真实 HR 文件仅用于仓库外本机只读探针，未写入 fixture、源码或提交历史；本版本未发布 npm、未推送远端。
+
 ## 0.6.0-local.3（本机检索层候选，未发布）
 
 ### 新增

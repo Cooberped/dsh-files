@@ -1,7 +1,7 @@
 {
   "name": "dsh-files",
-  "version": "0.6.0-local.3",
-  "description": "DeepSeek Harness document-ingestion plugin: native uploads and visual attachments; plus local search_documents retrieval and read_document coordinate expansion for text/PDF/DOCX/XLSX, with SQLite FTS5 and dependency-free JS fallback.",
+  "version": "0.6.0-local.4",
+  "description": "DeepSeek Harness document-ingestion plugin: native uploads and visual attachments; plus local search_documents retrieval and read_document coordinate expansion for text/PDF/DOCX/XLSX/PPTX, with SQLite FTS5 and dependency-free JS fallback.",
   "keywords": [
     "deepseek",
     "harness",
@@ -12,7 +12,8 @@
     "attachment",
     "pdf",
     "docx",
-    "xlsx"
+    "xlsx",
+    "pptx"
   ],
   "type": "module",
   "main": "lib/index.js",

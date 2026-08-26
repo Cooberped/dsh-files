@@ -135,25 +135,28 @@ async function descriptor(file: string, format: DocumentDescriptor['format'], id
   }
 }
 
-test('synthetic PDF/XLSX/DOCX build coordinate-bearing blocks without parser changes', async () => {
+test('synthetic PDF/XLSX/DOCX/PPTX build coordinate-bearing blocks', async () => {
   const pdf = await descriptor('atlas-kickoff.pdf', 'pdf', 'pdf')
   const xlsx = await descriptor('atlas-metrics.xlsx', 'xlsx', 'xlsx')
   const docx = await descriptor('流程绩效-Café会议纪要.docx', 'docx', 'docx')
+  const pptx = await descriptor('atlas-strategy.pptx', 'pptx', 'pptx')
   const options = { blockChars: 1600, maxBlocks: 20_000 }
-  const [pdfBlocks, xlsxBlocks, docxBlocks] = await Promise.all([
+  const [pdfBlocks, xlsxBlocks, docxBlocks, pptxBlocks] = await Promise.all([
     buildDocumentBlocks(pdf.bytes, pdf.descriptor, options),
     buildDocumentBlocks(xlsx.bytes, xlsx.descriptor, options),
-    buildDocumentBlocks(docx.bytes, docx.descriptor, options)
+    buildDocumentBlocks(docx.bytes, docx.descriptor, options),
+    buildDocumentBlocks(pptx.bytes, pptx.descriptor, options)
   ])
   assert.ok(pdfBlocks.some((block) => block.coordinate.startsWith('page:2') && block.text.includes('R-42')))
   assert.ok(xlsxBlocks.some((block) => block.coordinate === '指标总览!A4:F4' && block.text.includes('MET-HR-02')))
   assert.ok(xlsxBlocks.some((block) => block.coordinate === '稀疏数据!A200:Z200' && block.text.includes('SPARSE-ANCHOR-200')))
   assert.ok(docxBlocks.some((block) => block.coordinate.startsWith('line') && block.text.includes('AX-17')))
+  assert.ok(pptxBlocks.some((block) => block.coordinate === 'slide:2' && block.text.includes('Synthetic Strategy PMO')))
 })
 
 test('search_documents index mode returns a compact inventory before query retrieval', async () => {
   const files = new Map<string, Uint8Array>()
-  for (const file of ['atlas-kickoff.pdf', 'atlas-metrics.xlsx', '流程绩效-Café会议纪要.docx']) {
+  for (const file of ['atlas-kickoff.pdf', 'atlas-metrics.xlsx', '流程绩效-Café会议纪要.docx', 'atlas-strategy.pptx']) {
     files.set(file, new Uint8Array(await readFile(join(fixtureDir, file))))
   }
   const observations: string[] = []
@@ -217,8 +220,8 @@ test('search_documents index mode returns a compact inventory before query retri
     assert.equal(indexed.mode, 'index')
     assert.equal(indexed.query, '')
     assert.equal(indexed.backend, 'js-memory')
-    assert.equal(indexed.indexedDocuments, 3)
-    assert.equal(indexed.documents.length, 3)
+    assert.equal(indexed.indexedDocuments, 4)
+    assert.equal(indexed.documents.length, 4)
     assert.deepEqual(indexed.results, [])
 
     const first = await tool.execute(searchArgs, exec) as {
@@ -234,8 +237,8 @@ test('search_documents index mode returns a compact inventory before query retri
     assert.ok(first.results.some((result) => result.coordinate === '隐藏映射!A2:C2'))
     const second = await tool.execute(searchArgs, exec) as { indexedDocuments: number }
     assert.equal(second.indexedDocuments, 0)
-    assert.equal(readCount, 3, 'unchanged fs versions should not reread full file bytes')
-    assert.equal(observations.length, 9)
+    assert.equal(readCount, 4, 'unchanged fs versions should not reread full file bytes')
+    assert.equal(observations.length, 12)
   } finally {
     backend.close()
   }

@@ -1,7 +1,7 @@
 // dsh-files — a dual-face DeepSeek Harness plugin: one cordis row, one apply.
 // capabilities:
 //   1. read_document tool (host): sniffed-format text extraction for
-//      text/PDF/DOCX/XLSX with size pre-check and LRU parse cache.
+//      text/PDF/DOCX/XLSX/PPTX with size pre-check and LRU parse cache.
 //   2. upload surface (host webServer + web client): composer paperclip that
 //      stores files per session inside the session workspace and attaches the
 //      path to the outgoing message.
@@ -77,7 +77,7 @@ export const Config = z.object({
   cacheEntries: z.number().default(16),
   /** Parse-cache byte budget; large PDFs dominate retained memory. */
   cacheMaxBytes: z.number().default(64 * MEBIBYTE),
-  /** Per-call window character budget (text uses it in full; pdf/docx get half, xlsx three-quarters). The window is truncated with an explicit marker when exceeded. */
+  /** Per-call window character budget (text uses it in full; pdf/docx/pptx get half, xlsx three-quarters). The window is truncated with an explicit marker when exceeded. */
   maxOutputChars: z.number().default(24000),
   /** Byte cap for one upload body. */
   uploadMaxBytes: z.number().default(24 * MEBIBYTE),
@@ -162,7 +162,7 @@ export function apply(ctx: any, config: DocsConfig): void {
     ctx.systemPrompt.section({
       name: 'tool:search-documents',
       order: 105,
-      text: 'For every task involving one or more attached PDF/DOCX/XLSX/text files, call search_documents first with every relevant file path. If the user asks to first read, understand, ingest or prepare the files without a concrete question, omit query: this builds the private local index and returns only a compact inventory, so do not pre-read the files with read_document. For a concrete question, pass a short keyword or exact phrase and use the returned versioned page/line/Sheet!Range evidence directly. Call read_document only when a returned coordinate needs expansion. Do not scan whole documents repeatedly, and do not use Python or shell libraries unless these tools return an explicit error or unsupported-feature notice.'
+      text: 'For every task involving one or more attached PDF/DOCX/XLSX/PPTX/text files, call search_documents first with every relevant file path. If the user asks to first read, understand, ingest or prepare the files without a concrete question, omit query: this builds the private local index and returns only a compact inventory, so do not pre-read the files with read_document. For a concrete question, pass a short keyword or exact phrase and use the returned versioned page/line/Sheet!Range/slide evidence directly. Call read_document only when a returned coordinate needs expansion. Do not scan whole documents repeatedly, and do not use Python or shell libraries unless these tools return an explicit error or unsupported-feature notice.'
     })
     ctx.tools.register(
       defineSearchDocumentsTool(
@@ -188,7 +188,7 @@ export function apply(ctx: any, config: DocsConfig): void {
   ctx.systemPrompt.section({
     name: 'tool:read-document',
     order: 110,
-    text: 'read_document reads PDF/DOCX/XLSX/text directly; do not use Python or shell libraries as a fallback unless read_document returns an explicit error or unsupported-feature notice. For XLSX: call list_sheets first, choose a sheet, then use cell_range when only part of the worksheet is needed. Treat detected counts and truncation notices as authoritative boundaries; never describe a partial window as the complete workbook.'
+    text: 'read_document reads PDF/DOCX/XLSX/PPTX/text directly; PPTX slide text and speaker notes are native, so do not use Python or shell libraries for these supported formats unless read_document returns an explicit error or unsupported-feature notice. For XLSX: call list_sheets first, choose a sheet, then use cell_range when only part of the worksheet is needed. Treat detected counts and truncation notices as authoritative boundaries; never describe a partial window as the complete workbook or deck.'
   })
 
   ctx.tools.register(

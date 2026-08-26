@@ -137,7 +137,7 @@ async function readSource(
   if (format === null) {
     ctx.emit('fs/observed', target, { kind: 'present', version: info.version }, exec)
     throw new FsError(
-      `cannot index "${target.displayPath}": unrecognized file content (expected text, PDF, DOCX or XLSX)`,
+      `cannot index "${target.displayPath}": unrecognized file content (expected text, PDF, DOCX, XLSX or PPTX)`,
       'FS_NOT_TEXT'
     )
   }
@@ -217,7 +217,7 @@ export function defineSearchDocumentsTool(
   return defineTool({
     name: 'search_documents',
     description:
-      'Index or search selected PDF/DOCX/XLSX/text files locally before reading long documents. Omit query when the user asks to first read, understand or prepare files without a concrete question: this builds the private index and returns only a compact inventory, not document body text. For a concrete question, pass a short keyword or exact phrase (omit question filler) to receive versioned page/line/Sheet!Range evidence. Use read_document only to expand a returned coordinate; do not use Python or Bash for supported files.',
+      'Index or search selected PDF/DOCX/XLSX/PPTX/text files locally before reading long documents. Omit query when the user asks to first read, understand or prepare files without a concrete question: this builds the private index and returns only a compact inventory, not document body text. For a concrete question, pass a short keyword or exact phrase (omit question filler) to receive versioned page/line/Sheet!Range/slide evidence. Use read_document only to expand a returned coordinate; do not use Python or Bash for supported files.',
     parameters: {
       file_paths: {
         type: 'array',
@@ -251,7 +251,7 @@ export function defineSearchDocumentsTool(
               additionalProperties: false,
               properties: {
                 path: { type: 'string', required: true },
-                format: { type: 'string', required: true, enum: ['pdf', 'docx', 'xlsx', 'text'] },
+                format: { type: 'string', required: true, enum: ['pdf', 'docx', 'xlsx', 'pptx', 'text'] },
                 version: { type: 'string', required: true }
               }
             }
@@ -264,7 +264,7 @@ export function defineSearchDocumentsTool(
               additionalProperties: false,
               properties: {
                 path: { type: 'string', required: true },
-                format: { type: 'string', required: true, enum: ['pdf', 'docx', 'xlsx', 'text'] },
+                format: { type: 'string', required: true, enum: ['pdf', 'docx', 'xlsx', 'pptx', 'text'] },
                 version: { type: 'string', required: true },
                 coordinate: { type: 'string', required: true },
                 heading: { type: 'string', required: true },

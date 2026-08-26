@@ -23,7 +23,7 @@ DeepSeek Harness 双面插件（dual-face plugin）。四项能力：
 - **上传**：输入框工具栏回形针按钮、文件夹按钮、页面任意位置拖拽；`@` 文件候选；按会话隔离存储到 `<会话工作区>/.dsh-filess/<sessionId>/`，TTL 定期清扫，sha256 内容去重
 - **图片原生支持**：上传的 JPEG / PNG / WebP / GIF 走 harness 核心附件管线（`ctx.attachments` → 请求时转 base64 `image_url`），任何声明支持 image 模态的模型都能真正看到图片，用官方原生图片 rail 呈现
 - **文档按需检索**：`search_documents` 首次本地建索引，后续按短查询返回带版本和页码 / 行区间 / `Sheet!Range` 的证据块；优先用 Harness runtime 自带 SQLite FTS5，不可用时自动回退零依赖 JS 内存索引
-- **文档读取**：`read_document` 工具直接读取文本 / PDF / DOCX / XLSX，内容嗅探判定真实格式（不信任扩展名），编码回退、分页读取、XLSX 结构盘点与 A1 范围读取、LRU 解析缓存、协作取消
+- **文档读取**：`read_document` 工具直接读取文本 / PDF / DOCX / XLSX / PPTX，内容嗅探判定真实格式（不信任扩展名），编码回退、分页读取、XLSX 结构盘点与 A1 范围读取、PPTX 页序与 speaker notes、LRU 解析缓存、协作取消
 
 ## 功能
 
@@ -36,9 +36,9 @@ DeepSeek Harness 双面插件（dual-face plugin）。四项能力：
 </p>
 
 - **文件夹批量上传**：选中或拖放一个文件夹时，目录项被递归展平，子目录层级保留在会话上传目录内，并按下限并发逐文件上传——整个文件夹的内容一次到位
-- **拖放分流**：PDF/DOCX/XLSX/目录在 capture 阶段由插件接管，避免落入 Harness 的图片格式报错；纯 PNG/JPEG/WebP/GIF 仍走官方原生图片附件链路。Finder 多选同时合并 `DataTransfer.items` 与 `DataTransfer.files`，不会因 items 不完整而漏文件
+- **拖放分流**：PDF/DOCX/XLSX/PPTX/目录在 capture 阶段由插件接管，避免落入 Harness 的图片格式报错；纯 PNG/JPEG/WebP/GIF 仍走官方原生图片附件链路。Finder 多选同时合并 `DataTransfer.items` 与 `DataTransfer.files`，不会因 items 不完整而漏文件
 - **`@` 双源候选**：输入 `@` 同时列出本会话已上传文件与会话工作区文件；二者都使用**工作区相对路径**，agent 按 session cwd 解析，不再把 `/Users/...` 暴露到对话
-- **原生文档轨道**：横向紧凑卡片按**字节嗅探的真实格式**着色（PDF 红 / DOC 蓝 / XLS 绿 / TXT 灰），展示文件名、大小与 `上传中 / AI 可读取 / 失败` 状态；伪装文件（exe 改 .pdf）不按扩展名显示
+- **原生文档轨道**：横向紧凑卡片按**字节嗅探的真实格式**着色（PDF 红 / DOC 蓝 / XLS 绿 / PPT 橙 / TXT 灰），展示文件名、大小与 `上传中 / AI 可读取 / 失败` 状态；伪装文件（exe 改 .pdf）不按扩展名显示
 - **发送联动**：卡片挂载后按 Harness 官方 `@file` 语法注入引用；含空格路径自动使用 `@"path with spaces"`，模型无需猜测路径边界
 - **安全护栏**：loopback host + same-origin + sec-fetch-site 三重校验；`trustedHosts` 支持公网域名 / 反向隧道部署（裸 host 匹配任意端口、`host:port` 精确匹配，与官方 `--trusted-host` 栅栏同语义）；文件名消毒（控制字符、路径分隔、点段、前导点剥离，按 UTF-8 字节截断并**按码点对齐**，emoji 等 astral 字符不会切出孤立代理，长中文名不触发 ENAMETOOLONG）；未知会话 403；并发限流（默认 4）超限 429；超大请求体提前拒绝并排空，keep-alive 不挂起
 - **体量提示**：上传响应带 `readHint`（cost / estimatedChars），读前可预判成本
@@ -56,29 +56,30 @@ DeepSeek Harness 双面插件（dual-face plugin）。四项能力：
 
 ### 文档读取
 
-- **先检索、再展开**：涉及一个或多个长文件时先调用 `search_documents(file_paths, query)`；它只在首次见到新内容版本时解析并建索引，返回证据块后，模型仅在需要更多上下文时用 `read_document` 展开对应坐标
+- **先索引/检索、再展开**：“先理解这些文件，稍后再讨论”时调用不带 query 的 `search_documents(file_paths)`，只建私有索引并返回紧凑清单，不把正文塞进上下文；有具体问题时调用 `search_documents(file_paths, query)`，模型仅在需要更多上下文时用 `read_document` 展开对应坐标
 - **中文顺序正确**：中文连续段预分成重叠 bigram，并以 FTS5 短语查询保持顺序；`流程绩效` 不会误命中仅含 `绩效流程` 的块。单汉字（如“税”）走选定文档范围内的子串回退，`Q3` / `IPD` 等字母数字保持整词
 - **双后端同合同**：启动自检探测 Harness 实际 Node、SQLite 版本、FTS5 compile option 和有序短语；失败自动使用进程内 JS 索引，工具输出合同不变
-- **坐标与版本**：结果携带内容 sha256 版本和稳定坐标；PDF 为页码、DOCX/text 为行区间、XLSX 为 `Sheet!A1:F40`。版本变化时自动重建，坐标仍可交给 `read_document` 回读
+- **坐标与版本**：结果携带内容 sha256 版本和稳定坐标；PDF 为页码、DOCX/text 为行区间、XLSX 为 `Sheet!A1:F40`、PPTX 为 `slide:N`。版本变化时自动重建，坐标仍可交给 `read_document` 回读
 - **私有生命周期**：默认索引位于 `$DSH_HOME/dsh-files/index`（目录 `0700`、数据库及 WAL/SHM 文件 `0600`）；若显式配置的既有目录允许 group/other 访问，插件不会擅自 `chmod`，而是安全回退内存索引。查询日志只写该私有数据库，用于观察模型真实 query，索引与日志默认 30 天清理
 
-- 内容嗅探：PDF 头 / ZIP 中央目录成员 / UTF-8（fatal）/ UTF-16 BOM / UTF-16 无 BOM / GB18030，全部从字节判定，扩展名伪装（可执行文件、图片改成 .pdf）一律拒绝；上传侧同步嗅探，卡片显示真实格式
+- 内容嗅探：PDF 头 / ZIP 中央目录成员（DOCX/XLSX/PPTX）/ UTF-8（fatal）/ UTF-16 BOM / UTF-16 无 BOM / GB18030，全部从字节判定，扩展名伪装（可执行文件、图片改成 .pdf）一律拒绝；上传侧同步嗅探，卡片显示真实格式
 - 编码链：UTF-16 BOM → UTF-8（fatal，拒 NUL）→ GB18030（fatal）→ UTF-16 无 BOM（高置信度守卫），中文 GBK 与无 BOM UTF-16 文件均可读
-- 分页读取：行号 + offset/limit 分页，长文档按需翻页；窗口字符预算按格式**差异化分级**（text 满额、xlsx 3/4、pdf/docx 1/2，见 `maxOutputChars`），超限截断并显式标记剩余行数，引导模型翻页增量
-- 行号策略按格式分化：text（代码/配置）带行号供精确定位；PDF/DOCX/XLSX 段落流不带行号（省 token）
+- 分页读取：行号 + offset/limit 分页，长文档按需翻页；窗口字符预算按格式**差异化分级**（text 满额、xlsx 3/4、pdf/docx/pptx 1/2，见 `maxOutputChars`），超限截断并显式标记剩余行数，引导模型翻页增量
+- 行号策略按格式分化：text（代码/配置）带行号供精确定位；PDF/DOCX/XLSX/PPTX 段落流不带行号（省 token）
 - XLSX 结构优先读取：`list_sheets` 返回全部 sheet 名、used range、检测到的有效行与非空单元格计数，但不泄漏单元格内容；随后用 `sheet` 读取指定工作表，或用 `sheet + cell_range`（如 `A1:F40`）做坐标保真的精准读取
 - XLSX 正确性边界：输出携带 `row` 与 Excel 列坐标，空白单元格不再压缩错位；截断、遗漏 sheet 与检测计数均显式标记，禁止把部分窗口描述成“全量工作簿”；支持工作表 XML 编号不从 `sheet1.xml` 开始的合法 OOXML 关系映射
+- PPTX 原生投影：按演示文稿关系声明的真实页序读取，而不是按 ZIP 文件名猜顺序；本地提取 DrawingML 文本和 speaker notes，并以 `slide:N` 建索引。图片 OCR、图表数据、SmartArt 和嵌入对象仍是后续边界
 - 超时可配置：`read_document` 单次执行超时 `readTimeoutMs`（默认 120s），大 PDF 解析不再依赖硬编码
 - 扫描件明示：无文本层的 PDF（扫描件/纯图片）返回显式提示而非空串，模型不会误判为空文件
 - 解析缓存：LRU 双约束（条目数 + 字节预算），键为 `(targetKey, 内容 sha256, format, sheet, listSheets, cellRange)`，**内容或读取范围变化必然失效**
 - 大小预检：`stat` 先查，超限直接报 `FS_TOO_LARGE`，不读字节
 - 协作取消：解析期间监听执行信号，用户取消/会话关闭立即中止
-- 工具优先：systemPrompt 明确 `read_document` 可直接读取四类文档；除非工具返回显式错误或不支持能力，不再回退 Python / shell；XLSX 先盘点、再选 sheet / range
+- 工具优先：systemPrompt 明确 `read_document` 可直接读取五类文档；除非工具返回显式错误或不支持能力，不再回退 Python / shell；XLSX 先盘点、再选 sheet / range
 - 输出呈现：工具结果通过 `presentationMeta` 投影为 `card: 'read'`，Web UI 复用官方读文件卡片（行号/高亮/滚动），模型侧只收紧凑行文本
 
 ## 安全
 
-- 解码层复用维护中的只读基础库：`pdfjs-dist`（PDF）、`fflate + saxen`（DOCX ZIP/XML）和固定版本的 `read-excel-file`（XLSX）；DOCX 段落/表格/脚注投影、XLSX 范围读取、真实性边界和工具协议由本插件负责
+- 解码层复用维护中的只读基础库：`pdfjs-dist`（PDF）、`fflate + saxen`（DOCX/PPTX ZIP/XML）和固定版本的 `read-excel-file`（XLSX）；DOCX 段落/表格/脚注、PPTX 页/备注投影、XLSX 范围读取、真实性边界和工具协议由本插件负责
 - ZIP 中央目录探测不展开任何成员，成员数与成员名长度均有上限，恶意归档安全拒绝
 - 文件读取走 `ctx.fs`，继承会话沙箱与 fs 观察策略，与内置 read 工具同权
 - 检索数据库只保存在本机私有目录；它包含文档投影、工作区路径和模型实际查询，不应同步到云盘或提交到 Git。JS 回退只存在于当前进程内
@@ -103,7 +104,7 @@ dsh plugin --profile web add dsh-files
     maxSheets: 5                  # 每个工作簿读取的 sheet 数
     cacheEntries: 16              # 解析缓存条目数
     cacheMaxBytes: 67108864       # 解析缓存字节预算
-    maxOutputChars: 24000         # 单次输出窗口字符预算（text 满额；xlsx 3/4；pdf/docx 1/2，超限截断并标记）
+    maxOutputChars: 24000         # 单次输出窗口字符预算（text 满额；xlsx 3/4；pdf/docx/pptx 1/2，超限截断并标记）
     readTimeoutMs: 120000         # read_document 单次执行超时（大 PDF 解析可加大）
     uploadMaxBytes: 25165824      # 单次上传字节上限
     allowedExtensions: []         # 上传扩展名白名单（空 = 全部允许）
@@ -131,7 +132,7 @@ dsh plugin --profile web add dsh-files
 ```sh
 pnpm install
 pnpm test          # 上传 / 解析 / 缓存回归
-pnpm benchmark:retrieval # 10 类合成题在 SQLite / JS 后端同时验收
+pnpm benchmark:retrieval # 11 类合成题在 SQLite / JS 后端同时验收
 pnpm build         # esbuild 打包客户端 bundle
 npx tsc --noEmit   # 类型检查
 ```

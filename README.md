@@ -23,7 +23,7 @@ DeepSeek Harness dual-face plugin. Four capabilities:
 - **Upload** — paperclip button, folder button, and drag-and-drop anywhere; `@` file candidates; local session-isolated storage with TTL sweep and sha256 dedup. Files are written under `<session-workdir>/.dsh-filess/<sessionId>/` so the agent's fs backend can always resolve them.
 - **Native images** — JPEG/PNG/WebP/GIF uploads are handed to the harness core attachment pipeline (`ctx.attachments` → base64 `image_url`), so any model that declares an `image` input modality actually sees the picture, rendered through the stock native image rail.
 - **On-demand document retrieval** — `search_documents` indexes a content version once, then returns compact evidence with a page, line range or `Sheet!Range`. It prefers FTS5 from Harness' actual Node runtime and automatically falls back to a dependency-free JS memory index.
-- **Document reading** — `read_document` directly reads text / PDF / DOCX / XLSX with content sniffing, paged reads, workbook inventory, coordinate-aware A1 ranges, an LRU parse cache and cooperative cancellation.
+- **Document reading** — `read_document` directly reads text / PDF / DOCX / XLSX / PPTX with content sniffing, paged reads, workbook inventory, coordinate-aware A1 ranges, slide-order/speaker-note extraction, an LRU parse cache and cooperative cancellation.
 
 ## Features
 
@@ -54,17 +54,18 @@ DeepSeek Harness dual-face plugin. Four capabilities:
 
 ### Document reading
 
-- **Search, then expand**: for one or more long files, call `search_documents(file_paths, query)` first. It parses only a new content-sha256 version and returns relevant evidence blocks; `read_document` remains the coordinate expander when more context is needed.
+- **Index/search, then expand**: for “understand these files first” tasks, call `search_documents(file_paths)` without a query to build the private index and return only a compact inventory. For a concrete question, call `search_documents(file_paths, query)`; it parses only a new content-sha256 version and returns relevant evidence blocks. `read_document` remains the coordinate expander when more context is needed.
 - **Order-correct Chinese retrieval**: contiguous CJK runs become overlapping bigrams queried as an FTS phrase, so `流程绩效` does not match a block containing only `绩效流程`. Single CJK characters use a selected-document substring fallback; ASCII-number tokens such as `Q3` and `IPD` stay whole.
 - **Runtime fallback**: startup probes the actual Harness Node, SQLite version, FTS5 compile option and an ordered-phrase query. Any failure selects the in-process JS backend without changing the tool contract or preventing startup.
 - **Private lifecycle**: the default persistent index is `$DSH_HOME/dsh-files/index` (directory `0700`, database and WAL/SHM files `0600`). A configured pre-existing directory with group/other access is rejected to the memory fallback rather than chmodded. It contains local projections, paths and actual model search queries; document indexes and query logs expire after 30 days by default.
 
-- **Content sniffing**: PDF header, ZIP central-directory members (docx/xlsx), UTF-8 (fatal), UTF-16 BOM, UTF-16 without BOM, and GB18030 — all decided from bytes, never the extension. A spoofed extension (an executable or an image renamed to `.pdf`) is rejected.
+- **Content sniffing**: PDF header, ZIP central-directory members (docx/xlsx/pptx), UTF-8 (fatal), UTF-16 BOM, UTF-16 without BOM, and GB18030 — all decided from bytes, never the extension. A spoofed extension (an executable or an image renamed to `.pdf`) is rejected.
 - **Encoding chain**: UTF-16 BOM → UTF-8 (fatal, rejects NUL) → GB18030 (fatal) → UTF-16 without BOM (high-confidence guard), so Chinese GBK and BOM-less UTF-16 files both read.
-- **Paged reads**: line numbers + `offset`/`limit` pagination for long documents; the window character budget is tiered by format (text full, xlsx 3/4, pdf/docx 1/2, see `maxOutputChars`) and truncates with an explicit marker that counts surviving lines, steering the model to page incrementally.
-- **Line-number policy by format**: text (code/config) carries line numbers for precise location; PDF/DOCX/XLSX paragraph streams drop them to save tokens.
+- **Paged reads**: line numbers + `offset`/`limit` pagination for long documents; the window character budget is tiered by format (text full, xlsx 3/4, pdf/docx/pptx 1/2, see `maxOutputChars`) and truncates with an explicit marker that counts surviving lines, steering the model to page incrementally.
+- **Line-number policy by format**: text (code/config) carries line numbers for precise location; PDF/DOCX/XLSX/PPTX paragraph streams drop them to save tokens.
 - **XLSX structure-first reads**: `list_sheets` returns every sheet name, used range, detected populated-row count, and non-empty-cell count without exposing cell values. Then use `sheet`, or `sheet + cell_range` (for example `A1:F40`) for a coordinate-preserving targeted read.
 - **XLSX correctness boundary**: rows carry explicit row and Excel-column coordinates, blank cells do not shift values, and every truncation or omitted sheet is explicit. Valid OOXML workbooks whose worksheet relationship does not start at `sheet1.xml` are supported.
+- **PPTX native projection**: slides follow the relationship order declared by the deck, not ZIP filename order; DrawingML text and speaker notes are extracted locally and indexed as `slide:N`. Image OCR, chart data, SmartArt and embedded objects remain explicit future boundaries.
 - **Timeout**: `read_document` single-run timeout `readTimeoutMs` (default 120s) so large PDF parses don't rely on a hard-coded value.
 - **Scanned-doc notice**: a PDF with no text layer returns an explicit notice instead of an empty string, so the model doesn't mistake it for an empty file.
 - **Parse cache**: LRU with a dual budget, keyed on `(targetKey, content sha256, format, sheet, listSheets, cellRange)` — content and range changes invalidate it.
@@ -75,7 +76,7 @@ DeepSeek Harness dual-face plugin. Four capabilities:
 
 ## Security
 
-- The decoder layer reuses maintained read-only primitives: `pdfjs-dist` for PDF, `fflate + saxen` for DOCX ZIP/XML, and pinned `read-excel-file` for XLSX. This plugin owns DOCX paragraph/table/notes projection, spreadsheet ranges, truth boundaries, and the tool protocol.
+- The decoder layer reuses maintained read-only primitives: `pdfjs-dist` for PDF, `fflate + saxen` for DOCX/PPTX ZIP/XML, and pinned `read-excel-file` for XLSX. This plugin owns DOCX paragraph/table/notes projection, PPTX slide/notes projection, spreadsheet ranges, truth boundaries, and the tool protocol.
 - ZIP central-directory probing never expands members; member count and member-name length are capped, and malicious archives are rejected safely.
 - File reads go through `ctx.fs`, inheriting the session sandbox and fs-observation policy with the same privileges as the built-in read tool.
 - The retrieval database stays in a private local directory and must not be synced to cloud storage or committed to Git. The JS fallback is process-local only.
@@ -100,7 +101,7 @@ dsh plugin --profile web add dsh-files
     maxSheets: 5                  # sheets read per workbook
     cacheEntries: 16              # parse-cache entry count
     cacheMaxBytes: 67108864       # parse-cache byte budget
-    maxOutputChars: 24000         # per-call window budget (text full; xlsx 3/4; pdf/docx 1/2; truncate w/ marker)
+    maxOutputChars: 24000         # per-call window budget (text full; xlsx 3/4; pdf/docx/pptx 1/2; truncate w/ marker)
     readTimeoutMs: 120000         # read_document single-run timeout
     uploadMaxBytes: 25165824      # per-upload byte cap
     allowedExtensions: []         # upload extension allowlist (empty = all)
@@ -128,7 +129,7 @@ dsh plugin --profile web add dsh-files
 ```sh
 pnpm install
 pnpm test          # upload / parse / cache regression
-pnpm benchmark:retrieval # 10 synthetic correctness classes on SQLite and JS
+pnpm benchmark:retrieval # 11 synthetic correctness classes on SQLite and JS
 pnpm build         # esbuild client bundle
 npx tsc --noEmit   # type check
 ```

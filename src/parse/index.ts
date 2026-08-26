@@ -5,6 +5,7 @@ import type { DocumentFormat } from '../detect.js'
 import { parsePdf } from './pdf.ts'
 import { parseDocx } from './docx.ts'
 import { parseXlsx } from './xlsx.ts'
+import { parsePptx } from './pptx.ts'
 import { decodeText } from './text.ts'
 
 export interface ParseOptions {
@@ -35,6 +36,8 @@ export async function parseDocument(
       return parseDocx(bytes)
     case 'xlsx':
       return parseXlsx(bytes, options)
+    case 'pptx':
+      return parsePptx(bytes)
     case 'text': {
       const text = decodeText(bytes)
       if (text === null) {

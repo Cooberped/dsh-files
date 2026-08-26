@@ -170,6 +170,40 @@ async function pdfBlocks(
   }
 }
 
+async function pptxBlocks(
+  bytes: Uint8Array,
+  document: DocumentDescriptor,
+  output: DocumentBlock[],
+  options: BlockBuildOptions
+): Promise<void> {
+  const text = await parseDocument(bytes, 'pptx', { sheetRowLimit: 1 })
+  const markers = [...text.matchAll(/^### Slide (\d+)\n/gmu)]
+  if (markers.length === 0) {
+    genericBlocks(text, document, output, options)
+    return
+  }
+  for (const [index, marker] of markers.entries()) {
+    checkAborted(options.signal)
+    const slideNumber = Number(marker[1])
+    const start = (marker.index ?? 0) + marker[0].length
+    const end = markers[index + 1]?.index ?? text.length
+    const body = text.slice(start, end).trim()
+    const chunks = chunkLines(body, options.blockChars)
+    for (const chunk of chunks) {
+      const base = `slide:${slideNumber}`
+      const coordinate = chunks.length === 1 ? base : `${base},lines:${chunk.startLine}-${chunk.endLine}`
+      appendBlock(
+        output,
+        document,
+        coordinate,
+        headingFromLines(chunk.text.split('\n'), `Slide ${slideNumber}`),
+        chunk.text,
+        options.maxBlocks
+      )
+    }
+  }
+}
+
 function columnName(index: number): string {
   let value = index
   let output = ''
@@ -282,6 +316,8 @@ export async function buildDocumentBlocks(
   const output: DocumentBlock[] = []
   if (document.format === 'pdf') {
     await pdfBlocks(bytes, document, output, options)
+  } else if (document.format === 'pptx') {
+    await pptxBlocks(bytes, document, output, options)
   } else if (document.format === 'xlsx') {
     await xlsxBlocks(bytes, document, output, options)
   } else {
