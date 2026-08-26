@@ -35,6 +35,7 @@ DeepSeek Harness 双面插件（dual-face plugin）。三项能力：
 </p>
 
 - **文件夹批量上传**：选中或拖放一个文件夹时，目录项被递归展平，子目录层级保留在会话上传目录内，并按下限并发逐文件上传——整个文件夹的内容一次到位
+- **拖放分流**：PDF/DOCX/XLSX/目录在 capture 阶段由插件接管，避免落入 Harness 的图片格式报错；纯 PNG/JPEG/WebP/GIF 仍走官方原生图片附件链路。Finder 多选同时合并 `DataTransfer.items` 与 `DataTransfer.files`，不会因 items 不完整而漏文件
 - **`@` 双源候选**：输入 `@` 同时列出本会话已上传文件与会话工作区文件；二者都使用**工作区相对路径**，agent 按 session cwd 解析，不再把 `/Users/...` 暴露到对话
 - **原生文档轨道**：横向紧凑卡片按**字节嗅探的真实格式**着色（PDF 红 / DOC 蓝 / XLS 绿 / TXT 灰），展示文件名、大小与 `上传中 / AI 可读取 / 失败` 状态；伪装文件（exe 改 .pdf）不按扩展名显示
 - **发送联动**：卡片挂载后按 Harness 官方 `@file` 语法注入引用；含空格路径自动使用 `@"path with spaces"`，模型无需猜测路径边界

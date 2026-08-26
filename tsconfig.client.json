@@ -4,6 +4,7 @@
     "noEmit": true
   },
   "include": [
+    "src/client/**/*.ts",
     "src/client/**/*.tsx",
     "src/reference.ts"
   ],

@@ -28,7 +28,7 @@ DeepSeek Harness dual-face plugin. Three capabilities:
 
 ### Upload
 
-- **Three entry points**: a paperclip button in the composer toolbar for multi-select files, a folder button for an entire directory (the browser flattens the tree and preserves relative paths per sub-directory), and drag-and-drop anywhere on the page (a drag overlay hints while hovering). Batch uploads are bounded to 4 concurrent requests, and a per-file failure never blocks the rest.
+- **Three entry points**: a paperclip button in the composer toolbar for multi-select files, a folder button for an entire directory (the browser flattens the tree and preserves relative paths per sub-directory), and drag-and-drop anywhere on the page. Document/directory drops are captured before Harness' image-only handler while pure raster drops remain native. Batch uploads are bounded to 4 concurrent requests, and a per-file failure never blocks the rest.
 
 <p align="center">
   <img src="assets/upload-folder-images.png" alt="Batch folder upload: multiple images uploaded at once and shown as a grid" width="900">

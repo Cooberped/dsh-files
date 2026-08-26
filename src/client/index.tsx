@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Tooltip, IconPaperclipOutline16, IconCloseOutline16, IconFolderOpenOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { isRepresentableFileRef, modelFileMention } from '../reference.ts'
+import { collectDroppedFiles, hasFileTransfer, isRasterImage, shouldOwnDocumentDrop } from './drop.ts'
 
 const SOURCE_NAME = 'dsh-files'
 const STYLE_TAG = 'dsh-files/style.css'
@@ -162,19 +163,6 @@ function readyLabel(meta?: UploadMeta): string {
   return '已就绪'
 }
 
-/**
- * Whether a browser file is one of the raster formats the harness native
- * visual pipeline accepts (JPEG/PNG/WebP/GIF). Image files take the native
- * attachment rail (base64 → visual model); everything else stays on the local
- * document path (read_document). Native check first (MIME), then extension,
- * because dropped files sometimes carry an empty `type`.
- */
-function isRasterImage(file: File): boolean {
-  const t = (file.type ?? '').toLowerCase()
-  if (t === 'image/png' || t === 'image/jpeg' || t === 'image/webp' || t === 'image/gif') return true
-  return /\.(png|jpe?g|webp|gif)$/.test(file.name.toLowerCase())
-}
-
 function injectCss(): void {
   if (typeof document === 'undefined') return
   if (document.querySelector(`style[data-plugin-css=${JSON.stringify(STYLE_TAG)}]`) !== null) return
@@ -205,7 +193,6 @@ function injectCss(): void {
 .dsh-files-remove:hover{color:var(--dsw-alias-label-primary,inherit);background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12))}
 .dsh-files-error{display:inline-flex;align-items:center;gap:8px;max-width:100%;border:1px solid var(--dsw-alias-border-l2-darkmode-thin,rgba(127,127,127,.22));background:var(--dsw-alias-interactive-bg-hover-danger,rgba(216,97,97,.14));color:var(--dsw-alias-state-error-primary,#d86161);border-radius:10px;padding:6px 8px 6px 10px;font-size:13px}
 .dsh-files-error-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:420px}
-body.dsh-files-dragging:after{content:'松开以上传文件或文件夹';position:fixed;inset:0;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:600;color:#fff;background:rgba(0,0,0,.45);z-index:9999;pointer-events:none;text-shadow:0 1px 4px rgba(0,0,0,.5)}
 @keyframes dsh-files-pulse{0%,100%{opacity:.55}50%{opacity:1}}
 @media (prefers-reduced-motion:reduce){.dsh-files-card--uploading:before{animation:none}}
 `
@@ -292,54 +279,6 @@ async function uploadMany(actx: ActionContext, files: readonly File[], sessionId
   await Promise.all(
     Array.from({ length: Math.min(UPLOAD_CONCURRENCY, files.length) }, () => worker())
   )
-}
-
-/** 从 DataTransfer 提取文件；返回时目录项已被递归展平为具体文件。 */
-async function collectFiles(dt: DataTransfer | null): Promise<File[]> {
-  const files: File[] = []
-  if (dt === null) return files
-  const items = dt.items
-  const got = new Set<string>()
-  const visit = async (item: DataTransferItem | FileSystemEntry): Promise<void> => {
-    // DataTransferItem（拖拽列表）与 FileSystemEntry（目录递归）是两种形状：
-    // 前者用 webkitGetAsEntry/getAsFile，后者直接用 isFile/isDirectory/createReader。
-    if ('webkitGetAsEntry' in item) {
-      const entry = item.webkitGetAsEntry?.()
-      if (entry === undefined || entry === null) {
-        const file = item.getAsFile()
-        if (file !== null) files.push(file)
-        return
-      }
-      await visit(entry)
-      return
-    }
-    if (item.isFile) {
-      const fileEntry = item as FileSystemFileEntry
-      const file = await new Promise<File | null>((resolve) => fileEntry.file(resolve))
-      if (file !== null) {
-        // 去重键优先用 webkitRelativePath（含目录前缀）：同名不同目录的文件
-        // 都要保留，否则按 name 去重会静默丢一个。
-        const key = file.webkitRelativePath !== '' ? file.webkitRelativePath : file.name
-        if (!got.has(key)) {
-          got.add(key)
-          files.push(file)
-        }
-      }
-    } else if (item.isDirectory) {
-      const reader = (item as FileSystemDirectoryEntry).createReader()
-      // webkitGetAsEntry 的目录读取器每次 readEntries 最多返回约 100 项，
-      // 必须循环读到空数组为止（目录项多时一次读不全）。
-      while (true) {
-        const batch = await new Promise<FileSystemEntry[] | null>((resolve) => reader.readEntries(resolve))
-        if (batch === null || batch.length === 0) break
-        for (const child of batch) await visit(child)
-      }
-    }
-  }
-  for (const item of Array.from(items ?? [])) {
-    if (item.kind === 'file') await visit(item)
-  }
-  return files
 }
 
 async function attachFile(actx: ActionContext, file: File, sessionId: string, relPath?: string): Promise<void> {
@@ -439,32 +378,55 @@ function UploadButton({ attach, scope }: UploadButtonProps) {
   const scopeRef = useRef(scope)
   scopeRef.current = scope
 
-  // 整页拖拽上传：drop 任意文件/文件夹走同一上传管线（scopeRef 保证监听不重挂）。
+  // Document/directory drags are intercepted in the capture phase before the
+  // Harness image-only document listener. Pure raster-image drags pass through
+  // untouched to the native limits, toast and thumbnail rail.
   useEffect(() => {
+    let ownsDrag = false
     let dragDepth = 0
-    const isFileDrag = (e: DragEvent) => e.dataTransfer?.types.includes('Files') ?? false
-    const onDragOver = (e: DragEvent) => {
-      if (!isFileDrag(e)) return
+    const reset = () => {
+      ownsDrag = false
+      dragDepth = 0
+    }
+    const claim = (e: DragEvent) => {
+      if (!hasFileTransfer(e.dataTransfer)) return false
+      if (!ownsDrag) ownsDrag = shouldOwnDocumentDrop(e.dataTransfer)
+      return ownsDrag
+    }
+    const consume = (e: DragEvent) => {
       e.preventDefault()
+      e.stopImmediatePropagation()
+    }
+    const onDragEnter = (e: DragEvent) => {
+      if (!claim(e)) return
+      consume(e)
       dragDepth += 1
-      document.body.classList.add('dsh-files-dragging')
+    }
+    const onDragOver = (e: DragEvent) => {
+      if (!claim(e)) return
+      consume(e)
+      if (e.dataTransfer !== null) e.dataTransfer.dropEffect = 'copy'
     }
     const onDragLeave = (e: DragEvent) => {
-      if (!isFileDrag(e)) return
-      // 只处理真正离开 document 的 leave：元素内部的 leave 事件
-      // （relatedTarget 仍在本页）不应减少 dragDepth，否则遮罩会闪断。
-      if (e.relatedTarget !== null) return
+      if (!ownsDrag) return
+      consume(e)
       dragDepth = Math.max(0, dragDepth - 1)
-      if (dragDepth === 0) document.body.classList.remove('dsh-files-dragging')
+      const leavingViewport = e.clientX <= 0 || e.clientY <= 0
+        || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight
+      if (dragDepth === 0 || leavingViewport) reset()
     }
     const onDrop = (e: DragEvent) => {
-      e.preventDefault()
-      dragDepth = 0
-      document.body.classList.remove('dsh-files-dragging')
+      if (!claim(e)) return
+      consume(e)
+      const transfer = e.dataTransfer
+      reset()
+      // If Harness observed an earlier ambiguous dragenter, this clears its
+      // native overlay without allowing its image-only drop intake to run.
+      window.dispatchEvent(new Event('dragend'))
       setBusy(true)
       void (async () => {
         try {
-          const files = await collectFiles(e.dataTransfer ?? null)
+          const files = await collectDroppedFiles(transfer)
           if (files.length > 0) await scopeRef.current(files)
         } catch (err) {
           setUploadError(err instanceof Error ? err.message : String(err))
@@ -472,20 +434,18 @@ function UploadButton({ attach, scope }: UploadButtonProps) {
         setBusy(false)
       })()
     }
-    const onDragEnd = () => {
-      dragDepth = 0
-      document.body.classList.remove('dsh-files-dragging')
-    }
-    document.addEventListener('dragover', onDragOver)
-    document.addEventListener('dragleave', onDragLeave)
-    document.addEventListener('drop', onDrop)
-    document.addEventListener('dragend', onDragEnd)
+    const onDragEnd = () => reset()
+    document.addEventListener('dragenter', onDragEnter, true)
+    document.addEventListener('dragover', onDragOver, true)
+    document.addEventListener('dragleave', onDragLeave, true)
+    document.addEventListener('drop', onDrop, true)
+    window.addEventListener('dragend', onDragEnd, true)
     return () => {
-      document.removeEventListener('dragover', onDragOver)
-      document.removeEventListener('dragleave', onDragLeave)
-      document.removeEventListener('drop', onDrop)
-      document.removeEventListener('dragend', onDragEnd)
-      document.body.classList.remove('dsh-files-dragging')
+      document.removeEventListener('dragenter', onDragEnter, true)
+      document.removeEventListener('dragover', onDragOver, true)
+      document.removeEventListener('dragleave', onDragLeave, true)
+      document.removeEventListener('drop', onDrop, true)
+      window.removeEventListener('dragend', onDragEnd, true)
     }
   }, [])
 
