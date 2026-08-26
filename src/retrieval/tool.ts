@@ -1,0 +1,321 @@
+import { createHash } from 'node:crypto'
+import { defineTool } from '@deepseek-ai/dsh-tools'
+import { FsError, type FsTarget, type FsVersion } from '@deepseek-ai/dsh-fs'
+import { formatFromExtension, HEAD_SNIFF_BYTES, sniffFormat, sniffHead, type DocumentFormat } from '../detect.ts'
+import { buildDocumentBlocks, type DocumentDescriptor } from './blocks.ts'
+import { buildQueryPlan } from './tokenize.ts'
+import type { CreatedRetrievalBackend } from './runtime.ts'
+
+export interface SearchDocumentsConfig {
+  maxFileBytes: number
+  maxFiles: number
+  maxResults: number
+  blockChars: number
+  maxBlocksPerDocument: number
+  documentTtlMs: number
+  queryLogTtlMs: number
+  timeoutMs: number
+}
+
+interface SearchDocumentsContext {
+  fs: {
+    resolve(path: string, opts?: { cwd?: string; signal?: AbortSignal }): Promise<FsTarget>
+    stat(target: FsTarget, signal?: AbortSignal): Promise<{ version: FsVersion; type: string; size?: number } | undefined>
+    readBytes(target: FsTarget, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array>
+  }
+  emit(event: string, target: FsTarget, observation: object, exec: object): void
+}
+
+interface ParsedSearchArgs {
+  filePaths: string[]
+  query: string
+  limit: number
+}
+
+interface CachedSource {
+  fsVersion: string
+  descriptor: DocumentDescriptor
+}
+
+function parseArgs(args: Record<string, unknown>, config: SearchDocumentsConfig): ParsedSearchArgs {
+  if (!Array.isArray(args.file_paths) || args.file_paths.length === 0) {
+    throw new Error('file_paths must be a non-empty array of document paths')
+  }
+  if (args.file_paths.length > config.maxFiles) {
+    throw new Error(`file_paths must contain at most ${config.maxFiles} documents`)
+  }
+  const filePaths: string[] = []
+  const seen = new Set<string>()
+  for (const value of args.file_paths) {
+    if (typeof value !== 'string' || value.trim() === '') throw new Error('every file_paths item must be a non-empty string')
+    const path = value.trim().normalize('NFC')
+    if (!seen.has(path)) {
+      seen.add(path)
+      filePaths.push(path)
+    }
+  }
+  if (typeof args.query !== 'string' || args.query.trim() === '') throw new Error('query must be a non-empty string')
+  const query = args.query.trim().normalize('NFC')
+  const plan = buildQueryPlan(query)
+  if (plan.phrases.length === 0 && plan.singleCharacters.length === 0) {
+    throw new Error('query must contain at least one letter, number, or CJK character')
+  }
+  const limit = args.limit === undefined ? config.maxResults : args.limit
+  if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > config.maxResults) {
+    throw new Error(`limit must be an integer from 1 to ${config.maxResults}`)
+  }
+  return { filePaths, query, limit }
+}
+
+function hashBytes(value: Uint8Array | string): string {
+  return createHash('sha256').update(typeof value === 'string' ? value : Buffer.from(value)).digest('hex')
+}
+
+function sessionCwd(exec: { agent?: { session?: { header?: { cwd?: string } } } }): string | undefined {
+  return exec.agent?.session?.header?.cwd
+}
+
+function detectedFormat(bytes: Uint8Array, path: string): DocumentFormat | null {
+  const head = bytes.subarray(0, Math.min(HEAD_SNIFF_BYTES, bytes.length))
+  const headFormat = sniffHead(head)
+  if (headFormat === 'zip' || headFormat === null) {
+    return sniffFormat(bytes, formatFromExtension(path) ?? undefined)
+  }
+  return headFormat
+}
+
+interface ReadSource {
+  target: FsTarget
+  version: FsVersion
+  bytes?: Uint8Array
+  descriptor: DocumentDescriptor
+}
+
+async function readSource(
+  ctx: SearchDocumentsContext,
+  path: string,
+  cwd: string | undefined,
+  config: SearchDocumentsConfig,
+  exec: { signal: AbortSignal },
+  sourceCache: Map<string, CachedSource>
+): Promise<ReadSource> {
+  const target = await ctx.fs.resolve(path, { ...(cwd !== undefined ? { cwd } : {}), signal: exec.signal })
+  const info = await ctx.fs.stat(target, exec.signal)
+  if (info === undefined) {
+    ctx.emit('fs/observed', target, { kind: 'absent' }, exec)
+    throw new FsError(`cannot index "${target.displayPath}": not found`, 'FS_NOT_FOUND')
+  }
+  if (info.type !== 'file') throw new FsError(`cannot index "${target.displayPath}": not a regular file`, 'FS_NOT_REGULAR_FILE')
+  if (info.size !== undefined && info.size > config.maxFileBytes) {
+    ctx.emit('fs/observed', target, { kind: 'present', version: info.version }, exec)
+    throw new FsError(
+      `cannot index "${target.displayPath}": file is ${info.size} bytes, over the ${config.maxFileBytes} byte limit`,
+      'FS_TOO_LARGE'
+    )
+  }
+  const targetKey = String(target.targetKey)
+  const fsVersion = String(info.version)
+  const cached = sourceCache.get(targetKey)
+  if (cached?.fsVersion === fsVersion) {
+    const descriptor = {
+      ...cached.descriptor,
+      path: target.displayPath.normalize('NFC')
+    }
+    // Refresh insertion order so the bounded map behaves as a small LRU.
+    sourceCache.delete(targetKey)
+    sourceCache.set(targetKey, { fsVersion, descriptor })
+    return { target, version: info.version, descriptor }
+  }
+  const bytes = await ctx.fs.readBytes(target, exec.signal, config.maxFileBytes)
+  const format = detectedFormat(bytes, path)
+  if (format === null) {
+    ctx.emit('fs/observed', target, { kind: 'present', version: info.version }, exec)
+    throw new FsError(
+      `cannot index "${target.displayPath}": unrecognized file content (expected text, PDF, DOCX or XLSX)`,
+      'FS_NOT_TEXT'
+    )
+  }
+  const descriptor: DocumentDescriptor = {
+    id: hashBytes(targetKey),
+    path: target.displayPath.normalize('NFC'),
+    format,
+    version: hashBytes(bytes)
+  }
+  sourceCache.delete(targetKey)
+  sourceCache.set(targetKey, { fsVersion, descriptor })
+  while (sourceCache.size > 256) {
+    const oldest = sourceCache.keys().next().value as string | undefined
+    if (oldest === undefined) break
+    sourceCache.delete(oldest)
+  }
+  return {
+    target,
+    version: info.version,
+    bytes,
+    descriptor
+  }
+}
+
+async function bytesForIndex(
+  ctx: SearchDocumentsContext,
+  source: ReadSource,
+  config: SearchDocumentsConfig,
+  signal: AbortSignal
+): Promise<Uint8Array> {
+  const bytes = source.bytes ?? await ctx.fs.readBytes(source.target, signal, config.maxFileBytes)
+  if (hashBytes(bytes) !== source.descriptor.version) {
+    throw new Error(`cannot index "${source.target.displayPath}": file changed while it was being indexed; retry the search`)
+  }
+  return bytes
+}
+
+function renderResults(value: {
+  query: string
+  backend: string
+  results: Array<{ path: string; format: string; version: string; coordinate: string; heading: string; text: string }>
+}): string {
+  const header = `### document search — ${value.results.length} result(s); backend ${value.backend}; query ${JSON.stringify(value.query)}`
+  if (value.results.length === 0) return `${header}\nNo matching evidence found in the selected documents.`
+  const parts = value.results.map((result, index) => [
+    `${index + 1}. ${result.path} (${result.format}) @ ${result.coordinate} [version ${result.version.slice(0, 12)}]`,
+    result.heading,
+    result.text
+  ].filter((entry, entryIndex) => entryIndex === 0 || entry.trim() !== '').join('\n'))
+  return [header, ...parts].join('\n\n')
+}
+
+/** Model-facing local retrieval tool. Parsing remains delegated to src/parse/*. */
+export function defineSearchDocumentsTool(
+  ctx: SearchDocumentsContext,
+  config: SearchDocumentsConfig,
+  createdBackend: Promise<CreatedRetrievalBackend>
+) {
+  const indexing = new Map<string, Promise<void>>()
+  const sourceCache = new Map<string, CachedSource>()
+  let lastGcAt = 0
+
+  return defineTool({
+    name: 'search_documents',
+    description:
+      'Search selected PDF/DOCX/XLSX/text files locally before reading long documents. Pass every relevant file path and a short keyword or exact phrase (omit question filler). Returns versioned evidence blocks with page/line/Sheet!Range coordinates. Use read_document only to expand a returned coordinate; do not use Python or Bash for supported files.',
+    parameters: {
+      file_paths: {
+        type: 'array',
+        required: true,
+        items: { type: 'string' },
+        description: `Relevant document paths (maximum ${config.maxFiles}); include all files needed for cross-file questions.`
+      },
+      query: {
+        type: 'string',
+        required: true,
+        description: 'Short keywords or one exact phrase. Chinese phrase order is preserved; Q3/IPD-style tokens remain whole.'
+      },
+      limit: {
+        type: 'integer',
+        description: `Maximum evidence blocks to return (1-${config.maxResults}, default ${config.maxResults}).`
+      }
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          query: { type: 'string', required: true },
+          backend: { type: 'string', required: true, enum: ['sqlite-fts5', 'js-memory'] },
+          indexedDocuments: { type: 'integer', required: true },
+          results: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                path: { type: 'string', required: true },
+                format: { type: 'string', required: true, enum: ['pdf', 'docx', 'xlsx', 'text'] },
+                version: { type: 'string', required: true },
+                coordinate: { type: 'string', required: true },
+                heading: { type: 'string', required: true },
+                text: { type: 'string', required: true },
+                score: { type: 'number', required: true }
+              }
+            }
+          }
+        }
+      },
+      render: (_args, value) => [{ type: 'text', text: renderResults(value) }],
+      presentationMeta: (_args, value) => value
+    },
+    isConcurrencySafe: () => true,
+    timeoutMs: config.timeoutMs,
+    async execute(args, exec) {
+      const input = parseArgs(args, config)
+      const cwd = sessionCwd(exec)
+      const { backend } = await createdBackend
+      const sources: ReadSource[] = []
+      let indexedDocuments = 0
+      for (const path of input.filePaths) {
+        const source = await readSource(ctx, path, cwd, config, exec, sourceCache)
+        sources.push(source)
+        while (backend.documentVersion(source.descriptor.id) !== source.descriptor.version) {
+          const pending = indexing.get(source.descriptor.id)
+          if (pending !== undefined) {
+            await pending
+            exec.signal.throwIfAborted()
+            continue
+          }
+          const task = (async () => {
+            const bytes = await bytesForIndex(ctx, source, config, exec.signal)
+            const blocks = await buildDocumentBlocks(bytes, source.descriptor, {
+              blockChars: config.blockChars,
+              maxBlocks: config.maxBlocksPerDocument,
+              signal: exec.signal
+            })
+            backend.replaceDocument(source.descriptor, blocks, Date.now())
+          })()
+          indexing.set(source.descriptor.id, task)
+          indexedDocuments += 1
+          try {
+            await task
+          } finally {
+            if (indexing.get(source.descriptor.id) === task) indexing.delete(source.descriptor.id)
+          }
+        }
+        ctx.emit('fs/observed', source.target, { kind: 'present', version: source.version }, exec)
+      }
+      const now = Date.now()
+      const documentIds = [...new Set(sources.map((source) => source.descriptor.id))]
+      backend.touchDocuments(documentIds, now)
+      if (now - lastGcAt >= 60 * 60 * 1000) {
+        backend.gc(now, config.documentTtlMs, config.queryLogTtlMs)
+        lastGcAt = now
+      }
+      const plan = buildQueryPlan(input.query)
+      const results = backend.search(plan, documentIds, input.limit)
+      backend.logQuery(plan.normalizedQuery, documentIds, results.length, now)
+      return {
+        query: plan.normalizedQuery,
+        backend: backend.kind,
+        indexedDocuments,
+        results: results.map(({ documentId: _documentId, ...result }) => result)
+      }
+    },
+    presentCall(args) {
+      return {
+        card: 'generic',
+        title: `Search documents: ${args.query}`,
+        kind: 'read',
+        locations: args.file_paths.map((path) => ({ path }))
+      }
+    },
+    presentResult(_args, result) {
+      if (result.isError) return undefined
+      const value = result.meta as Parameters<typeof renderResults>[0] | undefined
+      if (value === undefined) return undefined
+      return {
+        card: 'generic',
+        title: `Document search (${value.results.length})`,
+        content: [{ type: 'text', text: renderResults(value) }]
+      }
+    }
+  })
+}

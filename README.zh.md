@@ -18,10 +18,11 @@
   <img src="assets/composer.png" alt="DeepSeek Harness 输入框里的回形针上传按钮与彩色文件卡片" width="900">
 </p>
 
-DeepSeek Harness 双面插件（dual-face plugin）。三项能力：
+DeepSeek Harness 双面插件（dual-face plugin）。四项能力：
 
 - **上传**：输入框工具栏回形针按钮、文件夹按钮、页面任意位置拖拽；`@` 文件候选；按会话隔离存储到 `<会话工作区>/.dsh-filess/<sessionId>/`，TTL 定期清扫，sha256 内容去重
 - **图片原生支持**：上传的 JPEG / PNG / WebP / GIF 走 harness 核心附件管线（`ctx.attachments` → 请求时转 base64 `image_url`），任何声明支持 image 模态的模型都能真正看到图片，用官方原生图片 rail 呈现
+- **文档按需检索**：`search_documents` 首次本地建索引，后续按短查询返回带版本和页码 / 行区间 / `Sheet!Range` 的证据块；优先用 Harness runtime 自带 SQLite FTS5，不可用时自动回退零依赖 JS 内存索引
 - **文档读取**：`read_document` 工具直接读取文本 / PDF / DOCX / XLSX，内容嗅探判定真实格式（不信任扩展名），编码回退、分页读取、XLSX 结构盘点与 A1 范围读取、LRU 解析缓存、协作取消
 
 ## 功能
@@ -55,6 +56,12 @@ DeepSeek Harness 双面插件（dual-face plugin）。三项能力：
 
 ### 文档读取
 
+- **先检索、再展开**：涉及一个或多个长文件时先调用 `search_documents(file_paths, query)`；它只在首次见到新内容版本时解析并建索引，返回证据块后，模型仅在需要更多上下文时用 `read_document` 展开对应坐标
+- **中文顺序正确**：中文连续段预分成重叠 bigram，并以 FTS5 短语查询保持顺序；`流程绩效` 不会误命中仅含 `绩效流程` 的块。单汉字（如“税”）走选定文档范围内的子串回退，`Q3` / `IPD` 等字母数字保持整词
+- **双后端同合同**：启动自检探测 Harness 实际 Node、SQLite 版本、FTS5 compile option 和有序短语；失败自动使用进程内 JS 索引，工具输出合同不变
+- **坐标与版本**：结果携带内容 sha256 版本和稳定坐标；PDF 为页码、DOCX/text 为行区间、XLSX 为 `Sheet!A1:F40`。版本变化时自动重建，坐标仍可交给 `read_document` 回读
+- **私有生命周期**：默认索引位于 `$DSH_HOME/dsh-files/index`（目录 `0700`、数据库及 WAL/SHM 文件 `0600`）；若显式配置的既有目录允许 group/other 访问，插件不会擅自 `chmod`，而是安全回退内存索引。查询日志只写该私有数据库，用于观察模型真实 query，索引与日志默认 30 天清理
+
 - 内容嗅探：PDF 头 / ZIP 中央目录成员 / UTF-8（fatal）/ UTF-16 BOM / UTF-16 无 BOM / GB18030，全部从字节判定，扩展名伪装（可执行文件、图片改成 .pdf）一律拒绝；上传侧同步嗅探，卡片显示真实格式
 - 编码链：UTF-16 BOM → UTF-8（fatal，拒 NUL）→ GB18030（fatal）→ UTF-16 无 BOM（高置信度守卫），中文 GBK 与无 BOM UTF-16 文件均可读
 - 分页读取：行号 + offset/limit 分页，长文档按需翻页；窗口字符预算按格式**差异化分级**（text 满额、xlsx 3/4、pdf/docx 1/2，见 `maxOutputChars`），超限截断并显式标记剩余行数，引导模型翻页增量
@@ -74,6 +81,7 @@ DeepSeek Harness 双面插件（dual-face plugin）。三项能力：
 - 解码层复用维护中的只读基础库：`pdfjs-dist`（PDF）、`fflate + saxen`（DOCX ZIP/XML）和固定版本的 `read-excel-file`（XLSX）；DOCX 段落/表格/脚注投影、XLSX 范围读取、真实性边界和工具协议由本插件负责
 - ZIP 中央目录探测不展开任何成员，成员数与成员名长度均有上限，恶意归档安全拒绝
 - 文件读取走 `ctx.fs`，继承会话沙箱与 fs 观察策略，与内置 read 工具同权
+- 检索数据库只保存在本机私有目录；它包含文档投影、工作区路径和模型实际查询，不应同步到云盘或提交到 Git。JS 回退只存在于当前进程内
 - 上传内容不做格式白名单强制（默认全允许），由会话沙箱兜底
 
 ## 安装
@@ -105,6 +113,15 @@ dsh plugin --profile web add dsh-files
     maxUploadBytesPerSession: 0   # 每会话存储配额（0 = 不限）
     uploadDir: /abs/path          # 无 sessions 服务时的回退上传根目录
     trustedHosts: []              # 额外信任的上传 Host，如 dsh.example.com 或 dsh.example.com:443（裸 host 匹配任意端口）；默认空 = 仅回环（127.0.0.1/localhost/[::1]）
+    retrievalEnabled: true        # 启用 search_documents；关闭后仍保留 read_document
+    # retrievalIndexDir: /绝对路径/私有目录 # 可选；省略则使用 $DSH_HOME/dsh-files/index（不展开 `~`）
+    retrievalMaxFiles: 12         # 单次检索最多文件数
+    retrievalMaxResults: 12       # 单次最多证据块
+    retrievalBlockChars: 1600     # 证据块字符上限
+    retrievalMaxBlocksPerDocument: 20000 # 单文档索引块上限
+    retrievalDocumentTtlMs: 2592000000   # 孤儿/未访问索引保留 30 天
+    retrievalQueryLogTtlMs: 2592000000   # 私有 query 日志保留 30 天
+    retrievalTimeoutMs: 120000    # search_documents 单次超时
 ```
 
 `trustedHosts` 与 `dsh web --trusted-host` 同源语义：通过公网域名 / 反向隧道（Caddy、frp）部署时，浏览器 Origin 是 `https://域名` 而上游已终结 TLS，主服务栅栏放行但上传栅栏的 loopback-only 检查会静默 403（旧版回形针点了没反应）。把部署域名加进 `trustedHosts` 后上传恢复正常；Origin 校验只比较 host 部分，兼容上游 TLS 终结。
@@ -114,6 +131,7 @@ dsh plugin --profile web add dsh-files
 ```sh
 pnpm install
 pnpm test          # 上传 / 解析 / 缓存回归
+pnpm benchmark:retrieval # 10 类合成题在 SQLite / JS 后端同时验收
 pnpm build         # esbuild 打包客户端 bundle
 npx tsc --noEmit   # 类型检查
 ```

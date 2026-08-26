@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.0-local.3（本机检索层候选，未发布）
+
+### 新增
+
+- 新增 `search_documents`：首次按内容 sha256 建立版本化证据块，后续只返回与短查询相关的页码、行区间或 `Sheet!Range`；`read_document` 保留为坐标扩展器，不再要求模型反复扫描整份长文档。
+- 中文连续段用有序 bigram 短语查询，`流程绩效` 不命中仅含 `绩效流程` 的干扰块；单汉字走选定文档内的有界子串回退；ASCII/数字词（`Q3`、`IPD`）保持整词。
+- 启动时在 Harness **实际 Node runtime** 探测 `node:sqlite`、SQLite 版本、FTS5 compile option 与有序短语；失败自动回退进程内 JS 索引，不阻断插件启动。
+- SQLite 索引位于 `$DSH_HOME/dsh-files/index`（目录 `0700`、数据库及 WAL/SHM `0600`），文档孤儿索引和私有查询日志均有 30 天 TTL。
+- 仓库内新增 10 类纯合成检索正确性 benchmark；SQLite 与 JS 后端同时校验文档、坐标和事实，真实 HR benchmark 仍仅通过仓库外绝对路径引用。
+
+### 边界
+
+- 本版本不修改 `src/parse/*`，解析器替换与 block IR 重构留待检索 A/B 成立之后。
+- 检索和索引只在工具调用阶段运行，不订阅模型流式 chunk，不向吐字链路增加逐 chunk 同步工作。
+- 未执行外部模型 A/B，未把真实 HR 文件、答案或索引写入仓库。
+
 ## 0.5.0-local.5（本机真实环境候选，未发布）
 
 ### 修复

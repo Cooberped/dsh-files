@@ -18,10 +18,11 @@ One package, one line of cordis config. A composer paperclip for uploads, a docu
   <img src="assets/composer.png" alt="DeepSeek Harness composer: paperclip upload button and colored file cards" width="900">
 </p>
 
-DeepSeek Harness dual-face plugin. Three capabilities:
+DeepSeek Harness dual-face plugin. Four capabilities:
 
 - **Upload** — paperclip button, folder button, and drag-and-drop anywhere; `@` file candidates; local session-isolated storage with TTL sweep and sha256 dedup. Files are written under `<session-workdir>/.dsh-filess/<sessionId>/` so the agent's fs backend can always resolve them.
 - **Native images** — JPEG/PNG/WebP/GIF uploads are handed to the harness core attachment pipeline (`ctx.attachments` → base64 `image_url`), so any model that declares an `image` input modality actually sees the picture, rendered through the stock native image rail.
+- **On-demand document retrieval** — `search_documents` indexes a content version once, then returns compact evidence with a page, line range or `Sheet!Range`. It prefers FTS5 from Harness' actual Node runtime and automatically falls back to a dependency-free JS memory index.
 - **Document reading** — `read_document` directly reads text / PDF / DOCX / XLSX with content sniffing, paged reads, workbook inventory, coordinate-aware A1 ranges, an LRU parse cache and cooperative cancellation.
 
 ## Features
@@ -53,6 +54,11 @@ DeepSeek Harness dual-face plugin. Three capabilities:
 
 ### Document reading
 
+- **Search, then expand**: for one or more long files, call `search_documents(file_paths, query)` first. It parses only a new content-sha256 version and returns relevant evidence blocks; `read_document` remains the coordinate expander when more context is needed.
+- **Order-correct Chinese retrieval**: contiguous CJK runs become overlapping bigrams queried as an FTS phrase, so `流程绩效` does not match a block containing only `绩效流程`. Single CJK characters use a selected-document substring fallback; ASCII-number tokens such as `Q3` and `IPD` stay whole.
+- **Runtime fallback**: startup probes the actual Harness Node, SQLite version, FTS5 compile option and an ordered-phrase query. Any failure selects the in-process JS backend without changing the tool contract or preventing startup.
+- **Private lifecycle**: the default persistent index is `$DSH_HOME/dsh-files/index` (directory `0700`, database and WAL/SHM files `0600`). A configured pre-existing directory with group/other access is rejected to the memory fallback rather than chmodded. It contains local projections, paths and actual model search queries; document indexes and query logs expire after 30 days by default.
+
 - **Content sniffing**: PDF header, ZIP central-directory members (docx/xlsx), UTF-8 (fatal), UTF-16 BOM, UTF-16 without BOM, and GB18030 — all decided from bytes, never the extension. A spoofed extension (an executable or an image renamed to `.pdf`) is rejected.
 - **Encoding chain**: UTF-16 BOM → UTF-8 (fatal, rejects NUL) → GB18030 (fatal) → UTF-16 without BOM (high-confidence guard), so Chinese GBK and BOM-less UTF-16 files both read.
 - **Paged reads**: line numbers + `offset`/`limit` pagination for long documents; the window character budget is tiered by format (text full, xlsx 3/4, pdf/docx 1/2, see `maxOutputChars`) and truncates with an explicit marker that counts surviving lines, steering the model to page incrementally.
@@ -72,6 +78,7 @@ DeepSeek Harness dual-face plugin. Three capabilities:
 - The decoder layer reuses maintained read-only primitives: `pdfjs-dist` for PDF, `fflate + saxen` for DOCX ZIP/XML, and pinned `read-excel-file` for XLSX. This plugin owns DOCX paragraph/table/notes projection, spreadsheet ranges, truth boundaries, and the tool protocol.
 - ZIP central-directory probing never expands members; member count and member-name length are capped, and malicious archives are rejected safely.
 - File reads go through `ctx.fs`, inheriting the session sandbox and fs-observation policy with the same privileges as the built-in read tool.
+- The retrieval database stays in a private local directory and must not be synced to cloud storage or committed to Git. The JS fallback is process-local only.
 - Upload content is not hard-allowlisted (all extensions allowed by default); the session sandbox is the backstop.
 
 ## Install
@@ -103,6 +110,15 @@ dsh plugin --profile web add dsh-files
     maxUploadBytesPerSession: 0   # per-session storage quota (0 = unlimited)
     uploadDir: /abs/path          # fallback upload root when there is no sessions service
     trustedHosts: []              # extra trusted upload hosts, e.g. dsh.example.com or dsh.example.com:443 (bare host matches any port); default empty = loopback only
+    retrievalEnabled: true        # enable search_documents; read_document remains available when false
+    # retrievalIndexDir: /absolute/private/path # optional; omit for $DSH_HOME/dsh-files/index (`~` is not expanded)
+    retrievalMaxFiles: 12         # documents per search call
+    retrievalMaxResults: 12       # evidence blocks per call
+    retrievalBlockChars: 1600     # maximum evidence-block characters
+    retrievalMaxBlocksPerDocument: 20000
+    retrievalDocumentTtlMs: 2592000000
+    retrievalQueryLogTtlMs: 2592000000
+    retrievalTimeoutMs: 120000
 ```
 
 `trustedHosts` shares the semantics of `dsh web --trusted-host`: when serving over a public domain / reverse tunnel (Caddy, frp), the browser Origin is `https://domain` while TLS terminates upstream. The default loopback-only upload rail would silently 403 every upload (the old paperclip "did nothing"). Add the deploy domain to `trustedHosts` to restore uploads; the Origin check compares only the host part, so upstream TLS termination still passes.
@@ -112,6 +128,7 @@ dsh plugin --profile web add dsh-files
 ```sh
 pnpm install
 pnpm test          # upload / parse / cache regression
+pnpm benchmark:retrieval # 10 synthetic correctness classes on SQLite and JS
 pnpm build         # esbuild client bundle
 npx tsc --noEmit   # type check
 ```

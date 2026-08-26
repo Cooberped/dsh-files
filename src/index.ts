@@ -6,9 +6,12 @@
 //      stores files per session inside the session workspace and attaches the
 //      path to the outgoing message.
 
-import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { isAbsolute, join, resolve } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 import { defineReadDocumentTool } from './tool.ts'
+import { defineSearchDocumentsTool } from './retrieval/tool.ts'
+import { createRetrievalBackend } from './retrieval/runtime.ts'
 import { createUploadHandler, createSweeper } from './upload.ts'
 import { createWorkspaceFilesHandler, DEFAULT_IGNORED_DIRS, DEFAULT_IGNORED_EXTENSIONS, DEFAULT_IGNORED_FILES } from './workspace.ts'
 import { ParseCache } from './cache.ts'
@@ -22,6 +25,7 @@ export const inject = ['tools', 'fs', 'systemPrompt', 'webServer', 'sessions']
 
 const MEBIBYTE = 1024 * 1024
 const DAY_MS = 24 * 60 * 60 * 1000
+const DSH_HOME = resolve(process.env.DSH_HOME?.trim() || join(homedir(), '.dsh'))
 
 /** Plugin config, mirroring the schemastery schema below. */
 export interface DocsConfig {
@@ -47,6 +51,17 @@ export interface DocsConfig {
   workspaceMaxDepth: number
   /** @ 工作区候选的最大文件数。 */
   workspaceMaxFiles: number
+  /** 启用本地按需检索工具；关闭后仍保留 read_document。 */
+  retrievalEnabled: boolean
+  /** 私有 SQLite 索引目录；运行时不支持 FTS5 时仅作探针，不写索引。 */
+  retrievalIndexDir: string
+  retrievalMaxFiles: number
+  retrievalMaxResults: number
+  retrievalBlockChars: number
+  retrievalMaxBlocksPerDocument: number
+  retrievalDocumentTtlMs: number
+  retrievalQueryLogTtlMs: number
+  retrievalTimeoutMs: number
 }
 
 export const Config = z.object({
@@ -82,7 +97,17 @@ export const Config = z.object({
   /** 信任的额外上传 Host，兼容公网域名/反向隧道部署（`dsh web --trusted-host` 同源语义）。 */
   trustedHosts: z.array(z.string()).default([]),
   workspaceMaxDepth: z.number().default(12),
-  workspaceMaxFiles: z.number().default(500)
+  workspaceMaxFiles: z.number().default(500),
+  /** Local retrieval is additive: read_document remains the coordinate expander. */
+  retrievalEnabled: z.boolean().default(true),
+  retrievalIndexDir: z.string().default(join(DSH_HOME, 'dsh-files', 'index')),
+  retrievalMaxFiles: z.number().default(12),
+  retrievalMaxResults: z.number().default(12),
+  retrievalBlockChars: z.number().default(1600),
+  retrievalMaxBlocksPerDocument: z.number().default(20_000),
+  retrievalDocumentTtlMs: z.number().default(30 * DAY_MS),
+  retrievalQueryLogTtlMs: z.number().default(30 * DAY_MS),
+  retrievalTimeoutMs: z.number().default(120_000)
 })
 
 function assertPositiveInteger(value: number, label: string): void {
@@ -101,7 +126,14 @@ export function apply(ctx: any, config: DocsConfig): void {
     ['uploadMaxBytes', config.uploadMaxBytes],
     ['uploadTtlMs', config.uploadTtlMs],
     ['sweepIntervalMs', config.sweepIntervalMs],
-    ['maxConcurrentUploads', config.maxConcurrentUploads]
+    ['maxConcurrentUploads', config.maxConcurrentUploads],
+    ['retrievalMaxFiles', config.retrievalMaxFiles],
+    ['retrievalMaxResults', config.retrievalMaxResults],
+    ['retrievalBlockChars', config.retrievalBlockChars],
+    ['retrievalMaxBlocksPerDocument', config.retrievalMaxBlocksPerDocument],
+    ['retrievalDocumentTtlMs', config.retrievalDocumentTtlMs],
+    ['retrievalQueryLogTtlMs', config.retrievalQueryLogTtlMs],
+    ['retrievalTimeoutMs', config.retrievalTimeoutMs]
   ] as const) {
     assertPositiveInteger(value, label)
   }
@@ -116,6 +148,42 @@ export function apply(ctx: any, config: DocsConfig): void {
   }
 
   const cache = new ParseCache(config.cacheEntries, config.cacheMaxBytes)
+
+  if (config.retrievalEnabled) {
+    if (config.retrievalIndexDir.trim() === '') throw new Error('dsh-files: retrievalIndexDir must be a non-empty path')
+    if (!isAbsolute(config.retrievalIndexDir)) {
+      throw new Error('dsh-files: retrievalIndexDir must be an absolute private path (omit it to use the DSH_HOME default)')
+    }
+    const logger = ctx.logger('dsh-files')
+    const createdBackend = createRetrievalBackend({
+      indexDir: config.retrievalIndexDir,
+      logger
+    })
+    ctx.systemPrompt.section({
+      name: 'tool:search-documents',
+      order: 105,
+      text: 'For questions about one or more attached PDF/DOCX/XLSX/text files, call search_documents first with every relevant file path and a short keyword or exact phrase. Use its versioned page/line/Sheet!Range evidence directly; call read_document only when a returned coordinate needs expansion. Do not scan the whole document repeatedly, and do not use Python or shell libraries unless these tools return an explicit error or unsupported-feature notice.'
+    })
+    ctx.tools.register(
+      defineSearchDocumentsTool(
+        ctx,
+        {
+          maxFileBytes: config.maxFileBytes,
+          maxFiles: config.retrievalMaxFiles,
+          maxResults: config.retrievalMaxResults,
+          blockChars: config.retrievalBlockChars,
+          maxBlocksPerDocument: config.retrievalMaxBlocksPerDocument,
+          documentTtlMs: config.retrievalDocumentTtlMs,
+          queryLogTtlMs: config.retrievalQueryLogTtlMs,
+          timeoutMs: config.retrievalTimeoutMs
+        },
+        createdBackend
+      )
+    )
+    ctx.on('dispose', () => {
+      void createdBackend.then(({ backend }) => backend.close())
+    })
+  }
 
   ctx.systemPrompt.section({
     name: 'tool:read-document',

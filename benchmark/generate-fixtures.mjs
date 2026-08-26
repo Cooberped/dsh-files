@@ -86,7 +86,7 @@ async function makeDocx() {
     <w:p><w:r><w:t>会议编号：AX-17。</w:t></w:r></w:p>
     <w:p><w:r><w:t>证据链：PDF 第 2 页规则 R-42 → 隐藏映射 → 指标总览 F4。</w:t></w:r></w:p>
     <w:p><w:r><w:t>会议决定：Q3 人力流程及时率目标采用 95%，指标 MET-HR-02。</w:t></w:r></w:p>
-    <w:p><w:r><w:t>绩效流程是干扰词，DISTRACTOR-REVERSED 不应替代精确短语“流程绩效”。</w:t></w:r></w:p>
+    <w:p><w:r><w:t>绩效流程是干扰词，DISTRACTOR-REVERSED 不应作为答案。</w:t></w:r></w:p>
     <w:tbl>
       <w:tr><w:tc><w:p><w:r><w:t>行动项</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>负责人</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>指标</w:t></w:r></w:p></w:tc></w:tr>
       <w:tr><w:tc><w:p><w:r><w:t>AX-17</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Synthetic HRBP</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>MET-HR-02</w:t></w:r></w:p></w:tc></w:tr>
