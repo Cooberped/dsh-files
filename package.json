@@ -79,6 +79,9 @@
     "build": "tsc -p tsconfig.client.json && tsc -p tsconfig.build.json && node build.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.client.json",
     "test": "node --test",
+    "benchmark:fixtures": "node benchmark/generate-fixtures.mjs",
+    "benchmark:validate": "node benchmark/generate-fixtures.mjs && node benchmark/validate-fixtures.mjs",
+    "benchmark:validate-real": "node benchmark/validate-real-manifest.mjs",
     "prepublishOnly": "npm run build && npm test"
   },
   "allowScripts": {
