@@ -1,7 +1,7 @@
 {
   "name": "dsh-files",
-  "version": "0.4.0",
-  "description": "DeepSeek Harness dual-face plugin: a composer file-upload button (paperclip + folder + drag-drop, @ dual-source candidates) with session-isolated storage, TTL sweep and sha256 dedup; native image support that hands JPEG/PNG/WebP/GIF to any image-capable model via the core attachment pipeline; plus a read_document tool (text/PDF/DOCX/XLSX) with content sniffing, GB18030 fallback and byte-budgeted LRU caching.",
+  "version": "0.5.0-local.2",
+  "description": "DeepSeek Harness document-ingestion plugin: native upload states and workspace-relative @file references; session-isolated storage with recursive TTL cleanup and sha256 dedup; native visual attachments; plus a read_document tool for text/PDF/DOCX/XLSX with content sniffing, coordinate-aware spreadsheet ranges and fail-closed truncation metadata.",
   "keywords": [
     "deepseek",
     "harness",
@@ -42,9 +42,10 @@
     }
   },
   "dependencies": {
-    "mammoth": "^1.8.0",
+    "fflate": "0.8.3",
     "pdfjs-dist": "^4.10.38",
-    "read-excel-file": "^5.8.7"
+    "read-excel-file": "9.3.10",
+    "saxen": "11.1.1"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
@@ -58,15 +59,25 @@
     "react": "^18.2.0"
   },
   "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-client-locale": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-runtime": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-fs": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.1.1-rc.2",
+    "@deepseek-ai/schemastery": "3.18.1",
     "@types/node": "^26.2.0",
     "@types/react": "~18.3.1",
     "esbuild": "^0.24.2",
     "jszip": "^3.10.1",
     "pdf-lib": "^1.17.1",
+    "react": "18.2.0",
     "typescript": "^5.7.2"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node build.mjs",
+    "build": "tsc -p tsconfig.client.json && tsc -p tsconfig.build.json && node build.mjs",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.client.json",
     "test": "node --test",
     "prepublishOnly": "npm run build && npm test"
   },

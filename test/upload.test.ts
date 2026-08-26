@@ -14,6 +14,7 @@ test('sanitizeFileName strips control chars, separators, dot segments and leadin
   assert.equal(sanitizeFileName('..\\..\\etc\\passwd'), 'etc_passwd')
   assert.equal(sanitizeFileName('../../.env'), 'env')
   assert.equal(sanitizeFileName('a\u0000b.txt'), 'ab.txt')
+  assert.equal(sanitizeFileName('quarter "final".xlsx'), 'quarter final.xlsx')
   assert.equal(sanitizeFileName('...'), 'upload.bin')
   assert.equal(sanitizeFileName('x'.repeat(200) + '.pdf').length <= 120, true)
 })
@@ -60,7 +61,8 @@ test('upload stores files per session under the session cwd', async () => {
       assert.equal(res.status, 200)
       const payload = (await res.json()) as { path: string; sessionId: string }
       assert.equal(payload.sessionId, 'session-a')
-      assert.ok(payload.path.startsWith(join(sessionDir, '.dsh-filess', 'session-a')))
+      assert.ok(payload.path.startsWith('.dsh-filess/session-a/'))
+      assert.equal(payload.path.startsWith('/'), false)
       const files = await readdir(join(sessionDir, '.dsh-filess', 'session-a'))
       assert.equal(files.length, 1)
     }
@@ -94,6 +96,7 @@ test('upload preserves sub-directories from x-file-relative-path, rejecting trav
       const subFiles = await readdir(join(sessionDir, '.dsh-filess', 'session-b', 'sub', 'dir'))
       assert.equal(subFiles.length, 1)
       assert.ok(subFiles[0].startsWith('e1af36aaec24') === false || subFiles.length === 1)
+      assert.equal((await stat(join(sessionDir, '.dsh-filess', 'session-b', 'sub', 'dir', subFiles[0]))).isFile(), true)
 
       const traversal = await fetch(`${base}/api/upload`, {
         method: 'POST',
@@ -255,7 +258,7 @@ test('DELETE removes an uploaded file', async () => {
     async (base) => {
       const up = await fetch(`${base}/api/upload`, {
         method: 'POST',
-        headers: { 'x-file-name': encodeURIComponent('x.txt'), 'x-session-id': 's1' },
+        headers: { 'x-file-name': encodeURIComponent('100%20 plan.txt'), 'x-session-id': 's1' },
         body: 'data'
       })
       const { path } = (await up.json()) as { path: string }
@@ -285,6 +288,18 @@ test('sweep removes expired files and emptied dirs, keeps fresh ones', async () 
   const result2 = await sweep(root, 60_000, () => Date.now())
   assert.equal(result2.removedFiles, 0)
   assert.equal(result2.removedDirs, 0)
+})
+
+test('sweep recursively removes expired folder uploads without following sibling paths', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-files-sweep-tree-'))
+  const nested = join(root, '.dsh-filess', 's1', 'reports', '2026')
+  await mkdir(nested, { recursive: true })
+  await writeFile(join(nested, 'old.xlsx'), 'x')
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  const result = await sweep(root, 10, () => Date.now())
+  assert.equal(result.removedFiles, 1)
+  assert.ok(result.removedDirs >= 3)
+  await assert.rejects(stat(join(root, '.dsh-filess', 's1')))
 })
 
 test('createSweeper with zero interval does nothing and returns a disposer', () => {
@@ -374,6 +389,42 @@ test('session quota rejects oversize totals with 507', async () => {
       assert.equal(over.status, 507)
       const files = await readdir(join(sessionDir, '.dsh-filess', 'q1'))
       assert.equal(files.length, 1)
+    }
+  )
+})
+
+test('session quota recursively counts folder uploads as file bytes', async () => {
+  const sessionDir = await mkdtemp(join(tmpdir(), 'dsh-files-session-tree-'))
+  const sessions = new Map([['q-tree', sessionDir]])
+  await withServer(
+    { maxBytes: 1024 * 1024, allowedExtensions: [], ttlMs: 60_000, sweepIntervalMs: 0, maxConcurrent: 4, maxSessionBytes: 1000, defaultDir: await mkdtemp(join(tmpdir(), 'dsh-files-fallback-')), sessionCwd: (id) => sessions.get(id) },
+    async (base) => {
+      const nested = await fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: {
+          'x-file-name': encodeURIComponent('nested.txt'),
+          'x-file-relative-path': encodeURIComponent('folder/nested.txt'),
+          'x-session-id': 'q-tree'
+        },
+        body: 'n'.repeat(600)
+      })
+      assert.equal(nested.status, 200)
+
+      // 目录自身的 stat.size 不应造成误拒：真实内容合计 900 字节。
+      const within = await fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: { 'x-file-name': encodeURIComponent('within.txt'), 'x-session-id': 'q-tree' },
+        body: 'w'.repeat(300)
+      })
+      assert.equal(within.status, 200)
+
+      // 递归计入嵌套的 600 字节后，再传 101 字节会精确越过 1000。
+      const over = await fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: { 'x-file-name': encodeURIComponent('over.txt'), 'x-session-id': 'q-tree' },
+        body: 'x'.repeat(101)
+      })
+      assert.equal(over.status, 507)
     }
   )
 })

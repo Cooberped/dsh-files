@@ -1,6 +1,6 @@
 // Bounded LRU cache for parsed document text. Keys are the fs target key plus
-// the observed file version, so an edited file never serves stale text while
-// unchanged files are parsed at most once per process.
+// a sha256 of the observed bytes, so an edited file never serves stale text
+// while unchanged files are parsed at most once per process and projection.
 //
 // Budget is enforced on BOTH entry count and total bytes: a 24 MiB PDF can
 // yield several MiB of extracted text, so a pure entry-count cap lets memory
@@ -14,6 +14,8 @@ export interface CacheKey {
   sheet?: number
   /** XLSX list_sheets 维度：列名结果与全量读取分开缓存。 */
   listSheets?: boolean
+  /** XLSX A1 range dimension. */
+  cellRange?: string
 }
 
 export class ParseCache {
@@ -114,6 +116,6 @@ export class ParseCache {
   }
 
   private keyOf(key: CacheKey): string {
-    return `${key.targetKey}\u0000${key.version}\u0000${key.format}\u0000${key.sheet ?? ''}\u0000${key.listSheets === true ? 'list' : ''}`
+    return `${key.targetKey}\u0000${key.version}\u0000${key.format}\u0000${key.sheet ?? ''}\u0000${key.listSheets === true ? 'list' : ''}\u0000${key.cellRange ?? ''}`
   }
 }

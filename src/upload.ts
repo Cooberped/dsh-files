@@ -8,8 +8,8 @@
 //     content dedup, bounded concurrency, TTL sweep
 
 import { createHash } from 'node:crypto'
-import { mkdir, readdir, rmdir, stat, unlink, writeFile } from 'node:fs/promises'
-import { join, resolve, sep } from 'node:path'
+import { lstat, mkdir, readdir, rmdir, unlink, writeFile } from 'node:fs/promises'
+import { join, relative, resolve, sep } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { sniffFormat } from './detect.ts'
 import { jsonError, networkGuard } from './guard.ts'
@@ -36,6 +36,8 @@ export interface UploadOptions {
   sessionCwd?: (sessionId: string) => string | undefined | Promise<string | undefined>
   /** Fallback storage root when no sessions service is available. */
   defaultDir: string
+  /** Observe workspace roots that receive uploads so the TTL sweeper can cover them. */
+  onStorageRoot?: (root: string) => void
   /** 额外信任的上传 Host（裸 host 匹配任意端口，host:port 精确匹配）；默认仅回环。 */
   trustedHosts?: string[]
   now?: () => number
@@ -50,7 +52,9 @@ export interface UploadOptions {
  * extension allowlist and client badge would see a nameless file.
  */
 export function sanitizeFileName(raw: string): string {
-  const cleaned = raw.replace(/[\u0000-\u001f\u007f]/g, '')
+  // Double quotes cannot be represented by Harness' stable @"path" grammar;
+  // strip them at the storage boundary together with control characters.
+  const cleaned = raw.replace(/[\u0000-\u001f\u007f"]/g, '')
   const segments = cleaned.split(/[\\/]/).filter((s) => s !== '' && s !== '.' && s !== '..')
   const joined = segments.join('_').replace(/^\.+/, '').trim()
   // 分离扩展名：最后一个点之后的 1-8 个字符（无空格）。
@@ -118,6 +122,29 @@ async function fileWithPrefixExists(dir: string, prefix: string): Promise<boolea
   }
 }
 
+/** Count regular-file payload bytes recursively without following symlinks. */
+async function storedFileBytes(dir: string): Promise<number> {
+  let entries: string[]
+  try {
+    entries = await readdir(dir)
+  } catch {
+    return 0
+  }
+  let total = 0
+  for (const entry of entries) {
+    const path = join(dir, entry)
+    try {
+      const info = await lstat(path)
+      if (info.isSymbolicLink()) continue
+      if (info.isDirectory()) total += await storedFileBytes(path)
+      else if (info.isFile()) total += info.size
+    } catch {
+      // raced with DELETE, sweep, or another upload
+    }
+  }
+  return total
+}
+
 export function createUploadHandler(options: UploadOptions) {
   const {
     maxBytes,
@@ -127,21 +154,26 @@ export function createUploadHandler(options: UploadOptions) {
     maxSessionBytes = 0,
     sessionCwd,
     defaultDir,
+    onStorageRoot,
     trustedHosts = [],
     now = () => Date.now()
   } = options
 
   let inflight = 0
 
-  async function storageDirFor(req: IncomingMessage): Promise<{ dir: string; sessionId: string } | null> {
+  async function storageDirFor(req: IncomingMessage): Promise<{ dir: string; sessionId: string; workspaceRoot: string } | null> {
     const raw = req.headers['x-session-id']
     const sessionId = typeof raw === 'string' ? sanitizeSessionId(raw) : 'anonymous'
     if (sessionCwd !== undefined) {
       const cwd = await sessionCwd(sessionId)
       if (cwd === undefined) return null
-      return { dir: join(cwd, '.dsh-filess', sessionId), sessionId }
+      const workspaceRoot = resolve(cwd)
+      onStorageRoot?.(workspaceRoot)
+      return { dir: join(workspaceRoot, '.dsh-filess', sessionId), sessionId, workspaceRoot }
     }
-    return { dir: join(defaultDir, '.dsh-filess', sessionId), sessionId }
+    const workspaceRoot = resolve(defaultDir)
+    onStorageRoot?.(workspaceRoot)
+    return { dir: join(workspaceRoot, '.dsh-filess', sessionId), sessionId, workspaceRoot }
   }
 
   async function handlePost(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -201,22 +233,11 @@ export function createUploadHandler(options: UploadOptions) {
         return
       }
       const data = Buffer.concat(chunks)
-      // 会话配额：TTL 周期内每会话文件数有限，readdir+stat 统计可接受。
+      // 会话配额必须递归统计文件夹上传内容；目录 inode 的 stat.size 既不是
+      // 文件内容大小，也会因文件系统而异。符号链接不跟随，避免越出上传树。
       // 检查放在 inflight 内，两个并发请求仍可能同时通过（低风险，TTL 会回收）。
       if (maxSessionBytes > 0) {
-        let used = 0
-        try {
-          const entries = await readdir(storage.dir)
-          for (const entry of entries) {
-            try {
-              used += (await stat(join(storage.dir, entry))).size
-            } catch {
-              // raced with a DELETE or sweep
-            }
-          }
-        } catch {
-          // dir not created yet — nothing stored
-        }
+        const used = await storedFileBytes(storage.dir)
         if (used + data.length > maxSessionBytes) {
           res.writeHead(507, { 'content-type': 'application/json' })
           res.end(JSON.stringify({ error: `session upload quota exceeded (${maxSessionBytes} bytes)` }))
@@ -234,8 +255,11 @@ export function createUploadHandler(options: UploadOptions) {
         if (rel !== '') {
           const decoded = decodeURIComponent(rel)
           const normalized = decoded.replace(/\\/g, '/').split('/').filter((s) => s !== '' && s !== '.' && s !== '..')
-          if (normalized.length > 0) {
-            const safe = normalized.map((s) => sanitizeFileName(s)).filter((s) => s !== 'upload.bin' && s !== '')
+          // webkitRelativePath includes the file name; only its directory
+          // prefix belongs in subDir. Including the last segment would create
+          // a directory named `report.xlsx` and hide the actual file below it.
+          if (normalized.length > 1) {
+            const safe = normalized.slice(0, -1).map((s) => sanitizeFileName(s)).filter((s) => s !== 'upload.bin' && s !== '')
             subDir = safe.join('/')
           }
         }
@@ -280,9 +304,13 @@ export function createUploadHandler(options: UploadOptions) {
       // 客户端据此显示真实格式徽章，伪装文件一上传就暴露。
       const sniffedFormat = sniffFormat(data)
       res.writeHead(200, { 'content-type': 'application/json' })
+      // Keep the model/user projection workspace-relative. The absolute path
+      // remains server-internal, avoiding disclosure of `/Users/...` while the
+      // fs backend can still resolve the reference against the session cwd.
+      const projectedPath = relative(storage.workspaceRoot, path).split(sep).join('/')
       res.end(
         JSON.stringify({
-          path,
+          path: projectedPath,
           name,
           bytes: data.length,
           sessionId: storage.sessionId,
@@ -308,14 +336,19 @@ export function createUploadHandler(options: UploadOptions) {
       return
     }
     const url = new URL(req.url ?? '', 'http://localhost')
-    const target = decodeURIComponent(url.searchParams.get('path') ?? '')
+    // URLSearchParams already percent-decodes once. A second decode would
+    // corrupt legitimate names such as `100%20 plan.xlsx`.
+    const target = url.searchParams.get('path') ?? ''
     if (target === '') {
       res.writeHead(400, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: 'missing path' }))
       return
     }
     const root = resolve(storage.dir)
-    const resolved = resolve(target)
+    // New clients send workspace-relative paths; resolve them from that
+    // workspace. Absolute paths from older clients remain supported, then go
+    // through the same containment check below.
+    const resolved = resolve(storage.workspaceRoot, target)
     if (resolved !== root && !resolved.startsWith(root + sep)) {
       res.writeHead(403, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: 'path outside session upload dir' }))
@@ -362,12 +395,20 @@ export interface SweepResult {
  * uploads (a file written after the sweep's readdir is newer than the sweep
  * window, and unlink failures are ignored).
  */
-export function createSweeper(root: string, ttlMs: number, intervalMs: number, now: () => number = () => Date.now()) {
+export function createSweeper(
+  roots: string | (() => Iterable<string>),
+  ttlMs: number,
+  intervalMs: number,
+  now: () => number = () => Date.now()
+) {
   if (intervalMs <= 0) return () => undefined
   const timer = setInterval(() => {
-    void sweep(root, ttlMs, now).catch((err) => {
-      console.error('[dsh-files] upload sweep failed:', err)
-    })
+    const current = typeof roots === 'function' ? roots() : [roots]
+    for (const root of new Set(current)) {
+      void sweep(root, ttlMs, now).catch((err) => {
+        console.error('[dsh-files] upload sweep failed:', err)
+      })
+    }
   }, intervalMs)
   timer.unref?.()
   return () => clearInterval(timer)
@@ -386,26 +427,23 @@ export async function sweep(root: string, ttlMs: number, now: () => number = () 
   } catch {
     return { removedFiles: 0, removedDirs: 0 }
   }
-  for (const session of sessions) {
-    const dir = join(base, session)
-    let info
+  const sweepDirectory = async (dir: string): Promise<void> => {
+    let entries: string[]
     try {
-      info = await stat(dir)
+      entries = await readdir(dir)
     } catch {
-      continue
+      return
     }
-    if (!info.isDirectory()) continue
-    let files: string[]
-    try {
-      files = await readdir(dir)
-    } catch {
-      continue
-    }
-    for (const file of files) {
-      const path = join(dir, file)
+    for (const entry of entries) {
+      const path = join(dir, entry)
       try {
-        const fileInfo = await stat(path)
-        if (fileInfo.mtimeMs < cutoff) {
+        // lstat avoids following a user-created symlink out of the upload
+        // tree. A stale symlink is treated as a file and only the link itself
+        // is removed.
+        const info = await lstat(path)
+        if (info.isDirectory()) {
+          await sweepDirectory(path)
+        } else if (info.mtimeMs < cutoff) {
           await unlink(path)
           removedFiles += 1
         }
@@ -420,7 +458,17 @@ export async function sweep(root: string, ttlMs: number, now: () => number = () 
         removedDirs += 1
       }
     } catch {
-      // ignore
+      // directory is non-empty or raced with another operation
+    }
+  }
+
+  for (const session of sessions) {
+    const dir = join(base, session)
+    try {
+      const info = await lstat(dir)
+      if (info.isDirectory()) await sweepDirectory(dir)
+    } catch {
+      // raced with a DELETE or another sweep
     }
   }
   return { removedFiles, removedDirs }

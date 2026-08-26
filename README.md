@@ -22,7 +22,7 @@ DeepSeek Harness dual-face plugin. Three capabilities:
 
 - **Upload** — paperclip button, folder button, and drag-and-drop anywhere; `@` file candidates; local session-isolated storage with TTL sweep and sha256 dedup. Files are written under `<session-workdir>/.dsh-filess/<sessionId>/` so the agent's fs backend can always resolve them.
 - **Native images** — JPEG/PNG/WebP/GIF uploads are handed to the harness core attachment pipeline (`ctx.attachments` → base64 `image_url`), so any model that declares an `image` input modality actually sees the picture, rendered through the stock native image rail.
-- **Document reading** — the `read_document` tool reads text / PDF / DOCX / XLSX with content sniffing, encoding fallback, paged reads, per-sheet XLSX access, an LRU parse cache and cooperative cancellation.
+- **Document reading** — `read_document` directly reads text / PDF / DOCX / XLSX with content sniffing, paged reads, workbook inventory, coordinate-aware A1 ranges, an LRU parse cache and cooperative cancellation.
 
 ## Features
 
@@ -35,11 +35,11 @@ DeepSeek Harness dual-face plugin. Three capabilities:
 </p>
 
 - **Folder batch upload**: selecting or dropping a folder recursively flattens its files, keeps the sub-directory layout under the session dir, and uploads with bounded concurrency — so a whole folder's content lands in one go.
-- **`@` dual-source candidates**: typing `@` lists both the current session's uploaded files (absolute paths) and the session workspace files (relative paths the agent resolves against its cwd), so you can reference an existing worktree file without re-uploading.
-- **Colored file cards**: the badge is colored by the *byte-sniffed* real format (PDF red / DOC blue / XLS green / TXT gray), so a disguised file (e.g. an exe renamed to `.pdf`) is never shown as its fake extension; each card shows name, size and a remove button.
+- **`@` dual-source candidates**: typing `@` lists both uploaded files and workspace files. Both are projected as workspace-relative paths, resolved against the session cwd, so `/Users/...` is no longer disclosed in the conversation.
+- **Native document rail**: compact horizontal cards are colored by the *byte-sniffed* format and show name, size, and `uploading / AI-readable / failed` state. References use Harness' stable `@file` grammar and quote paths containing spaces.
 - **Security rail**: loopback host + same-origin + `sec-fetch-site` triple check; `trustedHosts` for public-domain / reverse-tunnel deploys (bare host matches any port, `host:port` matches exactly, same semantics as `dsh web --trusted-host`); file-name sanitization (control chars, path separators, dot segments and leading dots stripped, truncated by UTF-8 bytes with code-point alignment so emoji never splits a surrogate); unknown session 403; concurrency limit (default 4) → 429; oversized body rejected early with the request drained so keep-alive is not left hanging.
 - **Read hint**: the upload response carries a `readHint` (`cost` / `estimatedChars`) so the client can pre-judge how expensive a file is to read.
-- **Lifecycle**: TTL sweep (default 7 days) with empty session dirs reaped, optional per-session storage quota (`maxUploadBytesPerSession`, 507 over limit), and sha256 content dedup (same content under a different name stores one file).
+- **Lifecycle**: TTL sweep (default 7 days) covers every observed session workspace and recursively removes folder uploads, with empty dirs reaped, optional per-session storage quota, and sha256 content dedup.
 
 ### Native images
 
@@ -57,18 +57,19 @@ DeepSeek Harness dual-face plugin. Three capabilities:
 - **Encoding chain**: UTF-16 BOM → UTF-8 (fatal, rejects NUL) → GB18030 (fatal) → UTF-16 without BOM (high-confidence guard), so Chinese GBK and BOM-less UTF-16 files both read.
 - **Paged reads**: line numbers + `offset`/`limit` pagination for long documents; the window character budget is tiered by format (text full, xlsx 3/4, pdf/docx 1/2, see `maxOutputChars`) and truncates with an explicit marker that counts surviving lines, steering the model to page incrementally.
 - **Line-number policy by format**: text (code/config) carries line numbers for precise location; PDF/DOCX/XLSX paragraph streams drop them to save tokens.
-- **XLSX sheet-level reads**: the `sheet` parameter returns that worksheet in full (not row-capped); other sheets fold into a merged read (first 5 by default) with an explicit truncation marker; `list_sheets` lists every sheet name without reading cells, and an out-of-range sheet reports the available list.
+- **XLSX structure-first reads**: `list_sheets` returns every sheet name, used range, detected populated-row count, and non-empty-cell count without exposing cell values. Then use `sheet`, or `sheet + cell_range` (for example `A1:F40`) for a coordinate-preserving targeted read.
+- **XLSX correctness boundary**: rows carry explicit row and Excel-column coordinates, blank cells do not shift values, and every truncation or omitted sheet is explicit. Valid OOXML workbooks whose worksheet relationship does not start at `sheet1.xml` are supported.
 - **Timeout**: `read_document` single-run timeout `readTimeoutMs` (default 120s) so large PDF parses don't rely on a hard-coded value.
 - **Scanned-doc notice**: a PDF with no text layer returns an explicit notice instead of an empty string, so the model doesn't mistake it for an empty file.
-- **Parse cache**: LRU with a dual budget (entry count + bytes), keyed on `(targetKey, content sha256, format, sheet, listSheets)` — content changes always invalidate it, not just the file version.
+- **Parse cache**: LRU with a dual budget, keyed on `(targetKey, content sha256, format, sheet, listSheets, cellRange)` — content and range changes invalidate it.
 - **Size pre-check**: `stat` first, then reject over `maxFileBytes` with `FS_TOO_LARGE` without reading bytes.
 - **Cooperative cancellation**: parses listen to the execution signal and abort on user cancel / session close.
-- **Measured reading**: the system prompt guides "probe structure first, then read precisely, stop when enough", keeping the context budget for task reasoning.
+- **Tool-first reading**: the system prompt tells the model to use `read_document` directly and not fall back to Python or shell unless the tool returns an explicit error or unsupported-feature notice.
 - **UI projection**: tool results are projected via `presentationMeta` into a `card: 'read'`, reusing the official file-read card (line numbers / highlight / scroll); the model side only receives compact line text.
 
 ## Security
 
-- Parser dependencies are maintained libraries with no known vulnerabilities: `pdfjs-dist` (Mozilla), `mammoth`, `read-excel-file` (read-only).
+- The decoder layer reuses maintained read-only primitives: `pdfjs-dist` for PDF, `fflate + saxen` for DOCX ZIP/XML, and pinned `read-excel-file` for XLSX. This plugin owns DOCX paragraph/table/notes projection, spreadsheet ranges, truth boundaries, and the tool protocol.
 - ZIP central-directory probing never expands members; member count and member-name length are capped, and malicious archives are rejected safely.
 - File reads go through `ctx.fs`, inheriting the session sandbox and fs-observation policy with the same privileges as the built-in read tool.
 - Upload content is not hard-allowlisted (all extensions allowed by default); the session sandbox is the backstop.

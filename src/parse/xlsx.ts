@@ -1,86 +1,237 @@
-// XLSX cell text extraction via read-excel-file (read-only parser, no known
-// advisories — replaces xlsx@0.18.5 which carries prototype-pollution CVEs).
-// The parser streams the workbook internally; `sheetRowLimit` bounds the rows
-// we keep for the model per sheet, and `maxSheets` bounds how many sheets are
-// read. Truncation is reported explicitly so the model never mistakes a
-// partial table for the whole workbook.
+// AI-facing XLSX projection built on read-excel-file's bounded, read-only
+// decoder. The projection owns workbook inventory, value-density statistics,
+// A1 range selection, stable coordinates, and honest truncation semantics.
 
-import readXlsxFile, { readSheetNames } from 'read-excel-file/node'
+import readXlsxFile, { type Sheet, type SheetData } from 'read-excel-file/node'
+
+const MAX_EXCEL_ROW = 1_048_576
+const MAX_EXCEL_COLUMN = 16_384
+// Prevent an otherwise tiny workbook from requesting a billion-cell string.
+// Larger tasks can split the worksheet into several targeted calls.
+const MAX_RANGE_CELLS = 100_000
 
 export interface XlsxParseOptions {
   sheetRowLimit: number
   maxSheets?: number
-  /** 1-based；指定后只读该 sheet 全量（不受 sheetRowLimit/maxSheets 截断）。 */
+  /** 1-based worksheet index. */
   sheet?: number
-  /** 只列 sheet 名，不读任何单元格。 */
+  /** Build a structure inventory instead of returning cell values. */
   listOnly?: boolean
+  /** Optional A1 range, for example A1:F40. Requires `sheet`. */
+  cellRange?: string
+}
+
+interface CellRange {
+  startColumn: number
+  startRow: number
+  endColumn: number
+  endRow: number
+  normalized: string
+}
+
+interface SheetStats {
+  rows: number
+  columns: number
+  populatedRows: number
+  nonEmptyCells: number
+  firstRow?: number
+  firstColumn?: number
+  lastRow?: number
+  lastColumn?: number
 }
 
 function cellText(value: unknown): string {
   if (value === null || value === undefined) return ''
   if (value instanceof Date) {
-    // read-excel-file 返回 UTC 的 Date；输出干净格式：
-    // 有非零时间分量才带时间，去掉 .000Z 噪音。
     const iso = value.toISOString().replace('T', ' ').slice(0, 19)
     return iso.endsWith(' 00:00:00') ? iso.slice(0, 10) : iso
   }
-  // 单元格内换行会破坏表格行对齐（行与列以 \n 和 \t 分隔），替换为空格。
-  return String(value).replace(/\r?\n/g, ' ')
+  // Tabs and newlines are structural delimiters in the AI projection.
+  return String(value).replace(/[\t\r\n]+/g, ' ').trim()
 }
 
-function rowsToText(rows: unknown[][]): string {
-  return rows.map((row) => row.map(cellText).join('\t').replace(/\s+$/, '')).join('\n')
+function isPopulated(value: unknown): boolean {
+  return value !== null && value !== undefined && cellText(value) !== ''
+}
+
+function sheetStats(rows: SheetData): SheetStats {
+  let columns = 0
+  let populatedRows = 0
+  let nonEmptyCells = 0
+  let firstRow: number | undefined
+  let firstColumn: number | undefined
+  let lastRow: number | undefined
+  let lastColumn: number | undefined
+  for (const [rowIndex, row] of rows.entries()) {
+    columns = Math.max(columns, row.length)
+    let populated = false
+    for (const [columnIndex, value] of row.entries()) {
+      if (!isPopulated(value)) continue
+      populated = true
+      nonEmptyCells += 1
+      const rowNumber = rowIndex + 1
+      const columnNumber = columnIndex + 1
+      firstRow = firstRow === undefined ? rowNumber : Math.min(firstRow, rowNumber)
+      firstColumn = firstColumn === undefined ? columnNumber : Math.min(firstColumn, columnNumber)
+      lastRow = lastRow === undefined ? rowNumber : Math.max(lastRow, rowNumber)
+      lastColumn = lastColumn === undefined ? columnNumber : Math.max(lastColumn, columnNumber)
+    }
+    if (populated) populatedRows += 1
+  }
+  return { rows: rows.length, columns, populatedRows, nonEmptyCells, firstRow, firstColumn, lastRow, lastColumn }
+}
+
+function columnName(index: number): string {
+  let value = index
+  let output = ''
+  while (value > 0) {
+    value -= 1
+    output = String.fromCharCode(65 + (value % 26)) + output
+    value = Math.floor(value / 26)
+  }
+  return output
+}
+
+function columnIndex(label: string): number {
+  let value = 0
+  for (const char of label.toUpperCase()) value = value * 26 + char.charCodeAt(0) - 64
+  return value
+}
+
+function parseCellRange(raw: string): CellRange {
+  const value = raw.trim().toUpperCase()
+  const match = /^([A-Z]{1,3})([1-9]\d*)(?::([A-Z]{1,3})([1-9]\d*))?$/.exec(value)
+  if (match === null) throw new Error(`invalid cell_range "${raw}" (expected A1 or A1:F40)`)
+  const startColumn = columnIndex(match[1])
+  const startRow = Number(match[2])
+  const endColumn = columnIndex(match[3] ?? match[1])
+  const endRow = Number(match[4] ?? match[2])
+  if (
+    startColumn < 1 || startColumn > MAX_EXCEL_COLUMN ||
+    endColumn < 1 || endColumn > MAX_EXCEL_COLUMN ||
+    startRow < 1 || startRow > MAX_EXCEL_ROW ||
+    endRow < 1 || endRow > MAX_EXCEL_ROW ||
+    endColumn < startColumn || endRow < startRow
+  ) {
+    throw new Error(`invalid cell_range "${raw}" (range is reversed or outside Excel limits)`)
+  }
+  const cells = (endColumn - startColumn + 1) * (endRow - startRow + 1)
+  if (cells > MAX_RANGE_CELLS) {
+    throw new Error(`cell_range "${raw}" contains ${cells} cells; split it into ranges of at most ${MAX_RANGE_CELLS} cells`)
+  }
+  return {
+    startColumn,
+    startRow,
+    endColumn,
+    endRow,
+    normalized: `${columnName(startColumn)}${startRow}:${columnName(endColumn)}${endRow}`
+  }
+}
+
+function rowsToCoordinateText(
+  rows: SheetData,
+  range: Pick<CellRange, 'startColumn' | 'startRow' | 'endColumn' | 'endRow'>
+): string {
+  const headers = ['row']
+  for (let column = range.startColumn; column <= range.endColumn; column += 1) headers.push(columnName(column))
+  const lines = [headers.join('\t')]
+  for (let rowNumber = range.startRow; rowNumber <= range.endRow; rowNumber += 1) {
+    const source = rows[rowNumber - 1] ?? []
+    const values = [String(rowNumber)]
+    for (let column = range.startColumn; column <= range.endColumn; column += 1) {
+      values.push(cellText(source[column - 1]))
+    }
+    // Keep empty rows inside an explicit range so coordinates cannot shift.
+    lines.push(values.join('\t').replace(/\s+$/, ''))
+  }
+  return lines.join('\n')
+}
+
+function automaticRowsToText(rows: SheetData, rowLimit: number): { text: string; truncated: boolean } {
+  const stats = sheetStats(rows)
+  if (stats.rows === 0 || stats.columns === 0) return { text: '(no cell values)', truncated: false }
+  const kept: Array<{ number: number; row: SheetData[number] }> = []
+  for (let index = 0; index < rows.length && kept.length < rowLimit; index += 1) {
+    if (rows[index].some(isPopulated)) kept.push({ number: index + 1, row: rows[index] })
+  }
+  const headers = ['row']
+  for (let column = 1; column <= stats.columns; column += 1) headers.push(columnName(column))
+  const lines = [headers.join('\t')]
+  for (const entry of kept) {
+    const values = [String(entry.number)]
+    for (let column = 1; column <= stats.columns; column += 1) values.push(cellText(entry.row[column - 1]))
+    lines.push(values.join('\t').replace(/\s+$/, ''))
+  }
+  return { text: lines.join('\n'), truncated: stats.populatedRows > kept.length }
+}
+
+function workbookInventory(sheets: Sheet[]): string {
+  if (sheets.length === 0) return '### Workbook\n(no worksheets)'
+  const lines = [`### Workbook (${sheets.length} sheets)`]
+  for (const [index, sheet] of sheets.entries()) {
+    const stats = sheetStats(sheet.data)
+    const usedRange = stats.firstRow !== undefined && stats.firstColumn !== undefined && stats.lastRow !== undefined && stats.lastColumn !== undefined
+      ? `${columnName(stats.firstColumn)}${stats.firstRow}:${columnName(stats.lastColumn)}${stats.lastRow}`
+      : 'empty'
+    lines.push(`${index + 1}. ${sheet.sheet} — used ${usedRange}; ${stats.populatedRows} populated rows; ${stats.nonEmptyCells} non-empty cells`)
+  }
+  lines.push('Use sheet with optional cell_range to read only the worksheet region needed for the task.')
+  return lines.join('\n')
+}
+
+function selectedSheet(sheets: Sheet[], index: number): Sheet {
+  if (index < 1 || index > sheets.length) {
+    const available = sheets.map((sheet, i) => `${i + 1}. ${sheet.sheet}`).join(', ')
+    throw new Error(`sheet ${index} out of range: workbook has ${sheets.length} sheet(s) — ${available}`)
+  }
+  return sheets[index - 1]
 }
 
 export async function parseXlsx(bytes: Uint8Array, options: XlsxParseOptions): Promise<string> {
-  const buf = Buffer.from(bytes)
-  const sheetNames = await readSheetNames(buf)
-
-  // 只列 sheet 名：模型先看有哪些 sheet，再决定读哪个（sheet 参数）。
-  if (options.listOnly === true) {
-    if (sheetNames.length === 0) return '(empty workbook)'
-    return `### Sheets (${sheetNames.length})\n${sheetNames.map((s, i) => `${i + 1}. ${String(s)}`).join('\n')}`
+  if (options.cellRange !== undefined && options.sheet === undefined) {
+    throw new Error('cell_range requires sheet: list the workbook, then select a worksheet and range')
   }
+  const sheets = await readXlsxFile(Buffer.from(bytes))
+  if (options.listOnly === true) return workbookInventory(sheets)
 
-  // sheet 级读取：截断发生在解析期，offset 翻页翻不回来；
-  // 指定 sheet 时返回该 sheet 全量，由工具层分页控制输出。
   if (options.sheet !== undefined) {
-    const idx = options.sheet
-    if (idx < 1 || idx > sheetNames.length) {
-      // 越界错误带上可用列表，模型能自纠正而不是瞎猜。
-      const list = sheetNames.map((s, i) => `${i + 1}. ${String(s)}`).join(', ')
-      throw new Error(`sheet ${idx} out of range: workbook has ${sheetNames.length} sheet(s) — ${list}`)
+    const sheet = selectedSheet(sheets, options.sheet)
+    const stats = sheetStats(sheet.data)
+    if (options.cellRange !== undefined) {
+      const range = parseCellRange(options.cellRange)
+      return [
+        `### Sheet ${options.sheet}/${sheets.length}: ${sheet.sheet} — range ${range.normalized}`,
+        `Detected values: ${stats.populatedRows} populated rows; ${stats.nonEmptyCells} non-empty cells in worksheet`,
+        rowsToCoordinateText(sheet.data, range)
+      ].join('\n\n')
     }
-    const sheet = sheetNames[idx - 1]
-    const rows = await readXlsxFile(buf, { sheet })
-    return [`### Sheet: ${String(sheet)}（全量，共 ${rows.length} 行）`, rowsToText(rows)].join('\n\n')
+    const projection = automaticRowsToText(sheet.data, Math.max(options.sheetRowLimit, stats.populatedRows))
+    return [
+      `### Sheet ${options.sheet}/${sheets.length}: ${sheet.sheet}`,
+      `Detected values: ${stats.populatedRows} populated rows; ${stats.nonEmptyCells} non-empty cells; ${stats.columns} columns`,
+      projection.text
+    ].join('\n\n')
   }
 
   const maxSheets = options.maxSheets ?? 5
-  const sheets = sheetNames.length > 0 ? sheetNames.slice(0, maxSheets) : [1]
-
   const parts: string[] = []
-  let totalRows = 0
-  let truncated = false
-  let sheetTruncated = false
-
-  for (const sheet of sheets) {
-    const rows = await readXlsxFile(buf, { sheet })
-    totalRows += rows.length
-    const kept = rows.slice(0, options.sheetRowLimit)
-    if (rows.length > kept.length) sheetTruncated = true
-    parts.push(`### Sheet: ${String(sheet)}\n${rowsToText(kept)}`)
+  let omittedSheets = 0
+  for (const [index, sheet] of sheets.entries()) {
+    if (index >= maxSheets) {
+      omittedSheets += 1
+      continue
+    }
+    const stats = sheetStats(sheet.data)
+    const projection = automaticRowsToText(sheet.data, options.sheetRowLimit)
+    parts.push([
+      `### Sheet ${index + 1}/${sheets.length}: ${sheet.sheet}`,
+      `Detected values: ${stats.populatedRows} populated rows; ${stats.nonEmptyCells} non-empty cells; ${stats.columns} columns`,
+      projection.text,
+      ...(projection.truncated
+        ? [`… truncated: showing ${options.sheetRowLimit}/${stats.populatedRows} populated rows; call with sheet: ${index + 1}`]
+        : [])
+    ].join('\n\n'))
   }
-
-  // 多 sheet 但被 maxSheets 截断
-  if (sheetNames.length > sheets.length) {
-    parts.push(`… 另有 ${sheetNames.length - sheets.length} 个 sheet 未读取（上限 ${maxSheets}）`)
-    truncated = true
-  }
-  // 单 sheet 行数被 sheetRowLimit 截断
-  if (sheetTruncated) {
-    parts.push(`… 已截断：每个 sheet 仅保留前 ${options.sheetRowLimit} 行，全簿共 ${totalRows} 行`)
-  }
-
+  if (omittedSheets > 0) parts.push(`… ${omittedSheets} more sheets omitted; call list_sheets first`)
   return parts.join('\n\n')
 }

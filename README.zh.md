@@ -22,7 +22,7 @@ DeepSeek Harness 双面插件（dual-face plugin）。三项能力：
 
 - **上传**：输入框工具栏回形针按钮、文件夹按钮、页面任意位置拖拽；`@` 文件候选；按会话隔离存储到 `<会话工作区>/.dsh-filess/<sessionId>/`，TTL 定期清扫，sha256 内容去重
 - **图片原生支持**：上传的 JPEG / PNG / WebP / GIF 走 harness 核心附件管线（`ctx.attachments` → 请求时转 base64 `image_url`），任何声明支持 image 模态的模型都能真正看到图片，用官方原生图片 rail 呈现
-- **文档读取**：`read_document` 工具读取文本 / PDF / DOCX / XLSX，内容嗅探判定真实格式（不信任扩展名），编码回退、分页读取、XLSX sheet 级访问、LRU 解析缓存、协作取消
+- **文档读取**：`read_document` 工具直接读取文本 / PDF / DOCX / XLSX，内容嗅探判定真实格式（不信任扩展名），编码回退、分页读取、XLSX 结构盘点与 A1 范围读取、LRU 解析缓存、协作取消
 
 ## 功能
 
@@ -35,12 +35,12 @@ DeepSeek Harness 双面插件（dual-face plugin）。三项能力：
 </p>
 
 - **文件夹批量上传**：选中或拖放一个文件夹时，目录项被递归展平，子目录层级保留在会话上传目录内，并按下限并发逐文件上传——整个文件夹的内容一次到位
-- **`@` 双源候选**：输入 `@` 同时列出本会话已上传的文件（绝对路径）与会话工作区文件（相对路径，agent 按其 cwd 解析），无需重新上传即可引用已有工作区文件
-- **浮动彩色卡片**：按**字节嗅探的真实格式**着色（PDF 红 / DOC 蓝 / XLS 绿 / TXT 灰），伪装文件（exe 改 .pdf）不按扩展名显示；文件名、大小、移除按钮
-- **发送联动**：卡片挂载后文件路径自动注入输入框，随消息发出
+- **`@` 双源候选**：输入 `@` 同时列出本会话已上传文件与会话工作区文件；二者都使用**工作区相对路径**，agent 按 session cwd 解析，不再把 `/Users/...` 暴露到对话
+- **原生文档轨道**：横向紧凑卡片按**字节嗅探的真实格式**着色（PDF 红 / DOC 蓝 / XLS 绿 / TXT 灰），展示文件名、大小与 `上传中 / AI 可读取 / 失败` 状态；伪装文件（exe 改 .pdf）不按扩展名显示
+- **发送联动**：卡片挂载后按 Harness 官方 `@file` 语法注入引用；含空格路径自动使用 `@"path with spaces"`，模型无需猜测路径边界
 - **安全护栏**：loopback host + same-origin + sec-fetch-site 三重校验；`trustedHosts` 支持公网域名 / 反向隧道部署（裸 host 匹配任意端口、`host:port` 精确匹配，与官方 `--trusted-host` 栅栏同语义）；文件名消毒（控制字符、路径分隔、点段、前导点剥离，按 UTF-8 字节截断并**按码点对齐**，emoji 等 astral 字符不会切出孤立代理，长中文名不触发 ENAMETOOLONG）；未知会话 403；并发限流（默认 4）超限 429；超大请求体提前拒绝并排空，keep-alive 不挂起
 - **体量提示**：上传响应带 `readHint`（cost / estimatedChars），读前可预判成本
-- **生命周期管理**：TTL 清扫（默认 7 天），空会话目录自动回收；可选会话存储配额（`maxUploadBytesPerSession`，超限 507）；sha256 内容去重（同内容不同名只存一份）
+- **生命周期管理**：TTL 清扫（默认 7 天）覆盖实际发生上传的所有会话工作区，并递归清理文件夹上传目录；空会话目录自动回收；可选会话存储配额（`maxUploadBytesPerSession`，超限 507）；sha256 内容去重（同内容不同名只存一份）
 
 ### 图片原生支持
 
@@ -58,18 +58,19 @@ DeepSeek Harness 双面插件（dual-face plugin）。三项能力：
 - 编码链：UTF-16 BOM → UTF-8（fatal，拒 NUL）→ GB18030（fatal）→ UTF-16 无 BOM（高置信度守卫），中文 GBK 与无 BOM UTF-16 文件均可读
 - 分页读取：行号 + offset/limit 分页，长文档按需翻页；窗口字符预算按格式**差异化分级**（text 满额、xlsx 3/4、pdf/docx 1/2，见 `maxOutputChars`），超限截断并显式标记剩余行数，引导模型翻页增量
 - 行号策略按格式分化：text（代码/配置）带行号供精确定位；PDF/DOCX/XLSX 段落流不带行号（省 token）
-- XLSX sheet 级读取：`sheet` 参数指定工作表时返回该 sheet 全量（不受行截断限制），其余 sheet 走合并读取（默认前 5 个），截断显式标记；`list_sheets` 参数先列出全部 sheet 名（不读单元格），越界报错附带可用 sheet 列表
+- XLSX 结构优先读取：`list_sheets` 返回全部 sheet 名、used range、检测到的有效行与非空单元格计数，但不泄漏单元格内容；随后用 `sheet` 读取指定工作表，或用 `sheet + cell_range`（如 `A1:F40`）做坐标保真的精准读取
+- XLSX 正确性边界：输出携带 `row` 与 Excel 列坐标，空白单元格不再压缩错位；截断、遗漏 sheet 与检测计数均显式标记，禁止把部分窗口描述成“全量工作簿”；支持工作表 XML 编号不从 `sheet1.xml` 开始的合法 OOXML 关系映射
 - 超时可配置：`read_document` 单次执行超时 `readTimeoutMs`（默认 120s），大 PDF 解析不再依赖硬编码
 - 扫描件明示：无文本层的 PDF（扫描件/纯图片）返回显式提示而非空串，模型不会误判为空文件
-- 解析缓存：LRU 双约束（条目数 + 字节预算），键为 `(targetKey, 内容 sha256, format, sheet, listSheets)`，**内容变化必然失效**（而非仅文件版本）
+- 解析缓存：LRU 双约束（条目数 + 字节预算），键为 `(targetKey, 内容 sha256, format, sheet, listSheets, cellRange)`，**内容或读取范围变化必然失效**
 - 大小预检：`stat` 先查，超限直接报 `FS_TOO_LARGE`，不读字节
 - 协作取消：解析期间监听执行信号，用户取消/会话关闭立即中止
-- 阅读克制：systemPrompt 引导「先探结构、再精准读、读够就停」，把上下文预算留给任务推理
+- 工具优先：systemPrompt 明确 `read_document` 可直接读取四类文档；除非工具返回显式错误或不支持能力，不再回退 Python / shell；XLSX 先盘点、再选 sheet / range
 - 输出呈现：工具结果通过 `presentationMeta` 投影为 `card: 'read'`，Web UI 复用官方读文件卡片（行号/高亮/滚动），模型侧只收紧凑行文本
 
 ## 安全
 
-- 解析依赖全部为无已知漏洞的维护中库：`pdfjs-dist`（Mozilla 官方）、`mammoth`、`read-excel-file`（纯只读）
+- 解码层复用维护中的只读基础库：`pdfjs-dist`（PDF）、`fflate + saxen`（DOCX ZIP/XML）和固定版本的 `read-excel-file`（XLSX）；DOCX 段落/表格/脚注投影、XLSX 范围读取、真实性边界和工具协议由本插件负责
 - ZIP 中央目录探测不展开任何成员，成员数与成员名长度均有上限，恶意归档安全拒绝
 - 文件读取走 `ctx.fs`，继承会话沙箱与 fs 观察策略，与内置 read 工具同权
 - 上传内容不做格式白名单强制（默认全允许），由会话沙箱兜底

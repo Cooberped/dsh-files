@@ -51,6 +51,7 @@ interface ParsedArgs {
   format: 'auto' | DocumentFormat
   sheet?: number
   listSheets: boolean
+  cellRange?: string
 }
 
 function assertPositiveInteger(value: number, label: string): void {
@@ -79,7 +80,16 @@ function parseArgs(args: Record<string, unknown>, config: ReadDocumentConfig): P
   if (listSheets && sheet !== undefined) {
     throw new Error('list_sheets and sheet are mutually exclusive: list first, then read a specific sheet')
   }
-  return { filePath, offset, limit, format: format as ParsedArgs['format'], sheet, listSheets }
+  const cellRange = typeof args.cell_range === 'string' && args.cell_range.trim() !== ''
+    ? args.cell_range.trim()
+    : undefined
+  if (cellRange !== undefined && sheet === undefined) {
+    throw new Error('cell_range requires sheet: list the workbook, then select a worksheet and range')
+  }
+  if (listSheets && cellRange !== undefined) {
+    throw new Error('list_sheets and cell_range are mutually exclusive')
+  }
+  return { filePath, offset, limit, format: format as ParsedArgs['format'], sheet, listSheets, cellRange }
 }
 
 /** The session workspace cwd for this call, when one applies. */
@@ -89,7 +99,7 @@ function sessionCwd(exec: { agent?: { session?: { header?: { cwd?: string } } } 
 
 /**
  * Run parseDocument with cooperative cancellation: the underlying parsers
- * (pdfjs/mammoth/read-excel-file) do not take an AbortSignal, so race the
+ * (pdfjs/fflate+saxen/read-excel-file) do not take an AbortSignal, so race the
  * parse against the signal and throw the FsError abort code when it fires.
  */
 async function parseDocumentWithAbort(
@@ -135,7 +145,7 @@ export function defineReadDocumentTool(ctx: {
   return defineTool({
     name: 'read_document',
     description:
-      'Read text/PDF/DOCX/XLSX the plain read tool cannot; page with offset/limit, list_sheets then sheet for XLSX.',
+      'Read text/PDF/DOCX/XLSX without Python. For XLSX, call list_sheets first, then select sheet and optionally cell_range (A1 notation). Results report detected value counts and truncation explicitly.',
     parameters: {
       file_path: {
         type: 'string',
@@ -161,7 +171,11 @@ export function defineReadDocumentTool(ctx: {
       },
       list_sheets: {
         type: 'boolean',
-        description: 'List the workbook sheet names without reading cells (XLSX only).'
+        description: 'Inspect worksheet names, used ranges, populated-row counts and non-empty-cell counts (XLSX only).'
+      },
+      cell_range: {
+        type: 'string',
+        description: 'Optional A1 range such as A1:F40. Requires sheet and preserves row/column coordinates (XLSX only).'
       }
     },
     output: {
@@ -263,14 +277,21 @@ export function defineReadDocumentTool(ctx: {
       }
       // sheet/list_sheets 只对 xlsx 有意义：对 PDF/DOCX/text 显式报错，
       // 防止模型以为 sheet 参数生效而拿到完整（未按 sheet 过滤）内容。
-      if ((input.sheet !== undefined || input.listSheets) && format !== 'xlsx') {
+      if ((input.sheet !== undefined || input.listSheets || input.cellRange !== undefined) && format !== 'xlsx') {
         ctx.emit('fs/observed', target, { kind: 'present', version: info.version }, exec)
         throw new FsError(
-          `cannot read "${target.displayPath}": sheet/list_sheets parameters are only supported for XLSX files (detected format: ${format})`,
+          `cannot read "${target.displayPath}": sheet/list_sheets/cell_range parameters are only supported for XLSX files (detected format: ${format})`,
           'FS_NOT_TEXT'
         )
       }
-      const cacheKey = { targetKey: target.targetKey, version: hashBytes(bytes), format, sheet: input.sheet, listSheets: input.listSheets }
+      const cacheKey = {
+        targetKey: target.targetKey,
+        version: hashBytes(bytes),
+        format,
+        sheet: input.sheet,
+        listSheets: input.listSheets,
+        cellRange: input.cellRange
+      }
       // getOrCompute 自带 in-flight 去重：并发分页同一文件只解析一次。
       const text = await cache.getOrCompute(cacheKey, () =>
         // 解析器不接受 AbortSignal；这里包装一层协作取消：
@@ -279,7 +300,8 @@ export function defineReadDocumentTool(ctx: {
           sheetRowLimit: config.sheetRowLimit,
           maxSheets: config.maxSheets,
           sheet: input.sheet,
-          listOnly: input.listSheets
+          listOnly: input.listSheets,
+          cellRange: input.cellRange
         }, exec.signal)
       )
       const window = windowLines(text, input.offset, input.limit, formatOutputBudget(format, config.maxOutputChars))

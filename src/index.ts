@@ -120,7 +120,7 @@ export function apply(ctx: any, config: DocsConfig): void {
   ctx.systemPrompt.section({
     name: 'tool:read-document',
     order: 110,
-    text: 'read_document reads PDF/DOCX/XLSX/text the read tool cannot. For large docs: probe structure first (list_sheets, or a small first window), then page with offset/limit; read only what the task needs, then stop.'
+    text: 'read_document reads PDF/DOCX/XLSX/text directly; do not use Python or shell libraries as a fallback unless read_document returns an explicit error or unsupported-feature notice. For XLSX: call list_sheets first, choose a sheet, then use cell_range when only part of the worksheet is needed. Treat detected counts and truncation notices as authoritative boundaries; never describe a partial window as the complete workbook.'
   })
 
   ctx.tools.register(
@@ -139,6 +139,12 @@ export function apply(ctx: any, config: DocsConfig): void {
   )
 
   const defaultDir = config.uploadDir ?? join(process.cwd(), 'uploads')
+  // Uploads normally live under each session cwd, not `uploadDir`. Track every
+  // observed workspace root so TTL cleanup covers the real storage locations.
+  const uploadRoots = new Set<string>([defaultDir])
+  for (const session of ctx.sessions.list()) {
+    if (typeof session.header.cwd === 'string') uploadRoots.add(session.header.cwd)
+  }
   const sessionCwd = (sessionId: string) => {
     const session = ctx.sessions.get(sessionId)
     return session === undefined ? undefined : session.header.cwd
@@ -156,12 +162,13 @@ export function apply(ctx: any, config: DocsConfig): void {
         maxSessionBytes: config.maxUploadBytesPerSession,
         trustedHosts: config.trustedHosts,
         defaultDir,
+        onStorageRoot: (root) => uploadRoots.add(root),
         sessionCwd
       })
     })
   )
 
-  const disposeSweeper = createSweeper(defaultDir, config.uploadTtlMs, config.sweepIntervalMs)
+  const disposeSweeper = createSweeper(() => uploadRoots, config.uploadTtlMs, config.sweepIntervalMs)
   ctx.on('dispose', disposeSweeper)
 
   // @ 工作区候选端点：只读返回当前会话 cwd 下的相对路径列表。

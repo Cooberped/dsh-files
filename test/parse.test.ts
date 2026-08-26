@@ -100,8 +100,8 @@ test('xlsx text extraction with row limit', async () => {
   const limited = await parseXlsx(bytes, { sheetRowLimit: 2 })
   assert.match(limited, /Alice/)
   assert.doesNotMatch(limited, /Bob/)
-  assert.match(limited, /### Sheet:/)
-  assert.match(limited, /已截断/)
+  assert.match(limited, /### Sheet 1\/1:/)
+  assert.match(limited, /truncated/)
 })
 
 test('utf-8 text decoding', () => {
@@ -191,15 +191,71 @@ test('sheet 参数只对 xlsx 有意义，对 pdf/docx/text 显式报错而非�
   assert.match(ok, /a/)
 })
 
-test('listOnly lists sheet names without reading cells', async () => {
+test('listOnly returns a workbook structure inventory without leaking cell values', async () => {
   const bytes = await makeMultiSheetXlsx()
   const listed = await parseXlsx(bytes, { sheetRowLimit: 1, listOnly: true })
-  assert.match(listed, /Sheets \(2\)/)
+  assert.match(listed, /Workbook \(2 sheets\)/)
   assert.match(listed, /1\. S1/)
   assert.match(listed, /2\. S2/)
-  // 不读单元格：没有 alpha/beta 内容。
+  assert.match(listed, /3 populated rows/)
+  assert.match(listed, /3 non-empty cells/)
+  // 清单只投影结构统计，不泄露 alpha/beta 单元格内容。
   assert.doesNotMatch(listed, /alpha/)
   assert.doesNotMatch(listed, /beta/)
+})
+
+test('listOnly reports the actual non-empty used range', async () => {
+  const bytes = await makeXlsx([[''], ['', 'only-value']])
+  const listed = await parseXlsx(bytes, { sheetRowLimit: 1, listOnly: true })
+  assert.match(listed, /used B2:B2/)
+  assert.doesNotMatch(listed, /only-value/)
+})
+
+test('cellRange keeps A1 coordinates and requires a selected sheet', async () => {
+  const bytes = await makeXlsx([
+    ['Name', 'Score', 'Team'],
+    ['Alice', 42, 'Red'],
+    ['Bob', 7, 'Blue']
+  ])
+  const selected = await parseXlsx(bytes, { sheetRowLimit: 1, sheet: 1, cellRange: 'B2:C3' })
+  assert.match(selected, /range B2:C3/)
+  assert.match(selected, /row\tB\tC/)
+  assert.match(selected, /2\t42\tRed/)
+  assert.match(selected, /3\t7\tBlue/)
+  assert.doesNotMatch(selected, /Alice/)
+  await assert.rejects(
+    parseXlsx(bytes, { sheetRowLimit: 1, cellRange: 'A1:B2' }),
+    /cell_range requires sheet/
+  )
+  await assert.rejects(
+    parseXlsx(bytes, { sheetRowLimit: 1, sheet: 1, cellRange: 'B9:A1' }),
+    /invalid cell_range/
+  )
+  await assert.rejects(
+    parseXlsx(bytes, { sheetRowLimit: 1, sheet: 1, cellRange: 'A1:XFD1048576' }),
+    /at most 100000 cells/
+  )
+})
+
+async function makeWorkbookWithoutSheet1Xml(): Promise<Uint8Array> {
+  const zip = new JSZip()
+  zip.file('[Content_Types].xml', `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet7.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`)
+  zip.file('_rels/.rels', `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`)
+  zip.file('xl/workbook.xml', `<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="First" sheetId="9" r:id="rId7"/><sheet name="Second" sheetId="2" r:id="rId3"/></sheets></workbook>`)
+  zip.file('xl/_rels/workbook.xml.rels', `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet7.xml"/><Relationship Id="rId7" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/></Relationships>`)
+  const xml = (value: string) => `<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>${value}</t></is></c></row></sheetData></worksheet>`
+  zip.file('xl/worksheets/sheet2.xml', xml('RELATION_FIRST_OK'))
+  zip.file('xl/worksheets/sheet7.xml', xml('RELATION_SECOND_OK'))
+  return new Uint8Array(await zip.generateAsync({ type: 'nodebuffer' }))
+}
+
+test('worksheet relationship mapping works when sheet1.xml does not exist', async () => {
+  const bytes = await makeWorkbookWithoutSheet1Xml()
+  const inventory = await parseXlsx(bytes, { sheetRowLimit: 10, listOnly: true })
+  assert.match(inventory, /1\. First/)
+  assert.match(inventory, /2\. Second/)
+  assert.match(await parseXlsx(bytes, { sheetRowLimit: 10, sheet: 1 }), /RELATION_FIRST_OK/)
+  assert.match(await parseXlsx(bytes, { sheetRowLimit: 10, sheet: 2 }), /RELATION_SECOND_OK/)
 })
 
 test('sheet out-of-range error names the available sheets', async () => {

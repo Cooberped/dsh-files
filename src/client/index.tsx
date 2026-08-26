@@ -5,6 +5,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Tooltip, IconPaperclipOutline16, IconCloseOutline16, IconFolderOpenOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { isRepresentableFileRef, modelFileMention } from '../reference.ts'
 
 const SOURCE_NAME = 'dsh-files'
 const STYLE_TAG = 'dsh-files/style.css'
@@ -20,6 +21,17 @@ interface UploadMeta {
   sniffed?: string | null
   /** 上传时所属会话；@ 候选只列当前会话的文件，避免跨会话泄漏。 */
   sessionId: string
+  readHint?: { cost: 'cheap' | 'moderate' | 'expensive'; estimatedChars: number }
+  deduplicated?: boolean
+}
+
+interface PendingUpload {
+  id: string
+  name: string
+  bytes: number
+  sessionId: string
+  status: 'uploading' | 'error'
+  error?: string
 }
 
 const uploadMeta = new Map<string, UploadMeta>()
@@ -27,6 +39,37 @@ const uploadMeta = new Map<string, UploadMeta>()
 // 与 uploadMeta（卡片显示 + 只保留被引用项）分离，避免清理逻辑把未引用文件从候选里清掉。
 // 每条带 sessionId，候选按当前会话过滤。
 const uploadedPool = new Map<string, UploadMeta>()
+let pendingSeq = 0
+let pendingSnapshot: readonly PendingUpload[] = []
+const pendingListeners = new Set<() => void>()
+
+function subscribePending(listener: () => void): () => void {
+  pendingListeners.add(listener)
+  return () => pendingListeners.delete(listener)
+}
+
+function publishPending(next: readonly PendingUpload[]): void {
+  pendingSnapshot = next
+  for (const listener of pendingListeners) listener()
+}
+
+function beginPending(file: File, sessionId: string): string {
+  const id = `upload-${Date.now().toString(36)}-${++pendingSeq}`
+  publishPending([...pendingSnapshot, { id, name: file.name, bytes: file.size, sessionId, status: 'uploading' }])
+  return id
+}
+
+function finishPending(id: string): void {
+  publishPending(pendingSnapshot.filter((item) => item.id !== id))
+}
+
+function failPending(id: string, error: string): void {
+  publishPending(pendingSnapshot.map((item) => item.id === id ? { ...item, status: 'error', error } : item))
+}
+
+function dismissPending(id: string): void {
+  finishPending(id)
+}
 // @ 双源的第二源：工作区文件。缓存 30 秒且绑定会话（换会话即失效），
 // 避免每次 @ 都重建 BFS 索引，也避免把上一个会话的工作区文件串进当前会话。
 let currentSessionId = ''
@@ -51,7 +94,7 @@ async function fetchWorkspaceFiles(): Promise<WorkspaceFile[]> {
     if (!res.ok) return []
     const payload = (await res.json()) as { files?: string[] }
     const files = Array.isArray(payload.files)
-      ? payload.files.map((rel) => ({ rel, name: nameFromPath(rel) }))
+      ? payload.files.filter(isRepresentableFileRef).map((rel) => ({ rel, name: nameFromPath(rel) }))
       : []
     workspaceCache = { sessionId: currentSessionId, files, at: now }
     return files
@@ -110,6 +153,15 @@ function nameFromPath(path: string): string {
   return base === '' ? path : base
 }
 
+function readyLabel(meta?: UploadMeta): string {
+  if (meta?.sniffed === 'pdf' || meta?.sniffed === 'docx' || meta?.sniffed === 'xlsx' || meta?.sniffed === 'text') {
+    const size = meta.readHint?.cost === 'expensive' ? ' · 大文件' : ''
+    return `AI 可读取${size}${meta.deduplicated === true ? ' · 已去重' : ''}`
+  }
+  if (meta?.sniffed === null) return '格式待确认'
+  return '已就绪'
+}
+
 /**
  * Whether a browser file is one of the raster formats the harness native
  * visual pipeline accepts (JPEG/PNG/WebP/GIF). Image files take the native
@@ -133,18 +185,29 @@ function injectCss(): void {
 .dsh-files-btn{border:none;background:transparent;color:var(--dsw-alias-label-secondary,currentColor);cursor:pointer;border-radius:6px;padding:4px;display:inline-flex;align-items:center;justify-content:center;line-height:0}
 .dsh-files-btn:hover:not(:disabled){color:var(--dsw-alias-label-primary,currentColor)}
 .dsh-files-btn:disabled{opacity:.45;cursor:default}
-.dsh-files-dock{box-sizing:border-box;width:calc(100% - var(--dsh-composer-side-clearance) - var(--dsh-composer-side-clearance) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset));max-width:calc(var(--dsh-composer-card-max-width) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset));margin:0 auto 6px;padding:0 var(--dsh-composer-dock-inset);display:flex;flex-wrap:wrap;gap:8px;flex:none}
-.dsh-files-card{position:relative;flex-direction:column;align-items:center;gap:5px;width:88px;flex:none;border:1px solid var(--dsw-alias-border-l2-darkmode-thin,rgba(127,127,127,.22));background:var(--dsw-specific-input-major,var(--dsw-alias-surface-2,rgba(127,127,127,.08)));border-radius:12px;padding:12px 8px 9px;box-shadow:var(--dsw-shadow-lv1,0 1px 2px rgba(0,0,0,.06));color:var(--dsw-alias-label-primary,inherit)}
-.dsh-files-badge{width:44px;height:56px;border-radius:6px;color:#fff;font-size:12px;font-weight:700;font-family:var(--ds-font-family-code,monospace);display:inline-flex;align-items:center;justify-content:center;letter-spacing:.5px;flex:none;box-shadow:inset 0 -10px 14px rgba(0,0,0,.14),inset 0 10px 12px rgba(255,255,255,.16)}
-.dsh-files-name{width:100%;font-size:12px;line-height:16px;text-align:center;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;word-break:break-all}
-.dsh-files-size{color:var(--dsw-alias-label-tertiary,inherit);font-size:10.5px;flex:none}
+.dsh-files-dock{box-sizing:border-box;width:calc(100% - var(--dsh-composer-side-clearance) - var(--dsh-composer-side-clearance) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset));max-width:calc(var(--dsh-composer-card-max-width) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset));margin:0 auto 7px;padding:0 var(--dsh-composer-dock-inset);display:flex;flex-wrap:wrap;gap:7px;flex:none}
+.dsh-files-card{position:relative;box-sizing:border-box;display:flex;align-items:center;gap:9px;width:236px;max-width:100%;min-height:58px;flex:none;overflow:hidden;border:1px solid var(--dsw-alias-border-l2-darkmode-thin,rgba(127,127,127,.22));background:var(--dsw-specific-input-major,var(--dsw-alias-surface-2,rgba(127,127,127,.08)));border-radius:11px;padding:8px 8px 8px 11px;box-shadow:var(--dsw-shadow-lv1,0 1px 2px rgba(0,0,0,.06));color:var(--dsw-alias-label-primary,inherit)}
+.dsh-files-card:before{content:'';position:absolute;inset:0 auto 0 0;width:3px;background:#35a568}
+.dsh-files-card--uploading:before{background:#4f7de8;animation:dsh-files-pulse 1.25s ease-in-out infinite}
+.dsh-files-card--error{border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary,#d86161) 45%,transparent)}
+.dsh-files-card--error:before{background:var(--dsw-alias-state-error-primary,#d86161)}
+.dsh-files-badge{width:34px;height:42px;border-radius:6px;color:#fff;font-size:10.5px;font-weight:700;font-family:var(--ds-font-family-code,monospace);display:inline-flex;align-items:center;justify-content:center;letter-spacing:.35px;flex:none;box-shadow:inset 0 -8px 12px rgba(0,0,0,.14),inset 0 8px 10px rgba(255,255,255,.14)}
+.dsh-files-details{min-width:0;display:flex;flex:1;flex-direction:column;gap:3px}
+.dsh-files-name{width:100%;font-size:12.5px;line-height:17px;font-weight:520;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dsh-files-meta{display:flex;align-items:center;gap:6px;min-width:0;color:var(--dsw-alias-label-tertiary,inherit);font-size:10.5px;line-height:14px}
+.dsh-files-status{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsh-files-status:before{content:'';display:inline-block;width:5px;height:5px;margin:0 5px 1px 0;border-radius:50%;background:#35a568}
+.dsh-files-card--uploading .dsh-files-status:before{background:#4f7de8}
+.dsh-files-card--error .dsh-files-status{color:var(--dsw-alias-state-error-primary,#d86161)}
+.dsh-files-card--error .dsh-files-status:before{background:var(--dsw-alias-state-error-primary,#d86161)}
+.dsh-files-size{white-space:nowrap;flex:none}
 .dsh-files-remove{border:none;background:transparent;color:var(--dsw-alias-label-tertiary,inherit);cursor:pointer;padding:2px;border-radius:4px;display:inline-flex;line-height:0;flex:none}
 .dsh-files-remove:hover{color:var(--dsw-alias-label-primary,inherit);background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12))}
-.dsh-files-card>.dsh-files-remove{position:absolute;top:4px;right:4px}
 .dsh-files-error{display:inline-flex;align-items:center;gap:8px;max-width:100%;border:1px solid var(--dsw-alias-border-l2-darkmode-thin,rgba(127,127,127,.22));background:var(--dsw-alias-interactive-bg-hover-danger,rgba(216,97,97,.14));color:var(--dsw-alias-state-error-primary,#d86161);border-radius:10px;padding:6px 8px 6px 10px;font-size:13px}
 .dsh-files-error-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:420px}
-.uV2eYG_chip:has(> .uV2eYG_chipLabel:empty){visibility:hidden}
 body.dsh-files-dragging:after{content:'松开以上传文件或文件夹';position:fixed;inset:0;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:600;color:#fff;background:rgba(0,0,0,.45);z-index:9999;pointer-events:none;text-shadow:0 1px 4px rgba(0,0,0,.5)}
+@keyframes dsh-files-pulse{0%,100%{opacity:.55}50%{opacity:1}}
+@media (prefers-reduced-motion:reduce){.dsh-files-card--uploading:before{animation:none}}
 `
   document.head.appendChild(tag)
 }
@@ -152,7 +215,7 @@ body.dsh-files-dragging:after{content:'松开以上传文件或文件夹';positi
 interface InputSnapshot {
   draft: string
   draftRev: number
-  occurrences: Array<{ source: string; ref: string; occurrenceId: string; offset: number }>
+  occurrences: Array<{ source: string; ref: string; occurrenceId: number; offset: number; length: number }>
 }
 
 interface InputService {
@@ -194,7 +257,7 @@ async function insertReference(actx: ActionContext, ref: string, label: string):
       source: SOURCE_NAME,
       ref,
       label,
-      clipboardText: ref
+      clipboardText: modelFileMention(ref)
     },
     span: {
       start: state.draft.length,
@@ -221,8 +284,8 @@ async function uploadMany(actx: ActionContext, files: readonly File[], sessionId
       if (i >= files.length) return
       try {
         await attachFile(actx, files[i], sessionId, files[i].webkitRelativePath)
-      } catch (err) {
-        setUploadError(err instanceof Error ? err.message : String(err))
+      } catch {
+        // attachFile keeps a per-file error card in the dock.
       }
     }
   }
@@ -251,7 +314,8 @@ async function collectFiles(dt: DataTransfer | null): Promise<File[]> {
       return
     }
     if (item.isFile) {
-      const file = await new Promise<File | null>((resolve) => item.file(resolve))
+      const fileEntry = item as FileSystemFileEntry
+      const file = await new Promise<File | null>((resolve) => fileEntry.file(resolve))
       if (file !== null) {
         // 去重键优先用 webkitRelativePath（含目录前缀）：同名不同目录的文件
         // 都要保留，否则按 name 去重会静默丢一个。
@@ -262,7 +326,7 @@ async function collectFiles(dt: DataTransfer | null): Promise<File[]> {
         }
       }
     } else if (item.isDirectory) {
-      const reader = item.createReader()
+      const reader = (item as FileSystemDirectoryEntry).createReader()
       // webkitGetAsEntry 的目录读取器每次 readEntries 最多返回约 100 项，
       // 必须循环读到空数组为止（目录项多时一次读不全）。
       while (true) {
@@ -301,44 +365,63 @@ async function attachFile(actx: ActionContext, file: File, sessionId: string, re
       }
     }
   }
-  const res = await fetch('/api/upload', {
-    method: 'POST',
-    headers: {
-      'x-file-name': encodeURIComponent(file.name),
-      // 文件夹上传时携带相对路径（webkitRelativePath 的目录前缀），
-      // 服务端据此在会话目录内保留子目录层级；单文件上传为空。
-      ...(relPath !== undefined && relPath !== ''
-        ? { 'x-file-relative-path': encodeURIComponent(relPath) }
-        : {}),
-      'x-session-id': sessionId
-    },
-    body: file
-  })
-  if (!res.ok) {
-    let detail = httpErrorText(res.status)
-    try {
-      const payload = (await res.json()) as { error?: string }
-      if (typeof payload.error === 'string') detail = payload.error
-    } catch {
-      // keep the status-based message
+  const pendingId = beginPending(file, sessionId)
+  try {
+    const res = await fetch('/api/upload', {
+      method: 'POST',
+      headers: {
+        'x-file-name': encodeURIComponent(file.name),
+        // 文件夹上传时携带相对路径（webkitRelativePath 的目录前缀），
+        // 服务端据此在会话目录内保留子目录层级；单文件上传为空。
+        ...(relPath !== undefined && relPath !== ''
+          ? { 'x-file-relative-path': encodeURIComponent(relPath) }
+          : {}),
+        'x-session-id': sessionId
+      },
+      body: file
+    })
+    if (!res.ok) {
+      let detail = httpErrorText(res.status)
+      try {
+        const payload = (await res.json()) as { error?: string }
+        if (typeof payload.error === 'string') detail = payload.error
+      } catch {
+        // keep the status-based message
+      }
+      throw new Error(detail)
     }
+    const payload = (await res.json()) as {
+      path: string
+      name?: string
+      bytes?: number
+      sniffedFormat?: string | null
+      sessionId?: string
+      readHint?: UploadMeta['readHint']
+      deduplicated?: boolean
+    }
+    if (typeof payload.path !== 'string') throw new Error('missing path in response')
+    const name = payload.name ?? file.name
+    const meta: UploadMeta = {
+      name,
+      bytes: payload.bytes ?? file.size,
+      sniffed: 'sniffedFormat' in payload ? (payload.sniffedFormat ?? null) : undefined,
+      sessionId: payload.sessionId ?? sessionId,
+      readHint: payload.readHint,
+      deduplicated: payload.deduplicated
+    }
+    uploadMeta.set(payload.path, meta)
+    uploadedPool.set(payload.path, meta)
+    clearUploadError()
+    const inserted = await insertReference(actx, payload.path, name)
+    if (!inserted) {
+      failPending(pendingId, '已上传，可通过 @ 重新选择')
+      return
+    }
+    finishPending(pendingId)
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    failPending(pendingId, detail)
     throw new Error(`${file.name}: ${detail}`)
-  }
-  const payload = (await res.json()) as { path: string; name?: string; bytes?: number; sniffedFormat?: string | null }
-  if (typeof payload.path !== 'string') throw new Error('missing path in response')
-  const name = payload.name ?? file.name
-  const meta = {
-    name,
-    bytes: payload.bytes ?? file.size,
-    sniffed: 'sniffedFormat' in payload ? (payload.sniffedFormat ?? null) : undefined,
-    sessionId
-  }
-  uploadMeta.set(payload.path, meta)
-  uploadedPool.set(payload.path, meta)
-  clearUploadError()
-  const inserted = await insertReference(actx, payload.path, '')
-  if (!inserted) {
-    setUploadError(`文件已上传但未能加入输入框: ${payload.path}`)
   }
 }
 
@@ -482,6 +565,8 @@ interface DockProps {
 function UploadDock({ useInput, inputActions }: DockProps) {
   const state = useInput?.((s) => s) ?? null
   const error = useSyncExternalStore(subscribeErrors, () => uploadError)
+  const pending = useSyncExternalStore(subscribePending, () => pendingSnapshot)
+    .filter((item) => item.sessionId === currentSessionId)
   const ours = (state?.occurrences ?? []).filter((o) => o.source === SOURCE_NAME)
   const refs = ours.map((o) => o.ref).join('\n')
 
@@ -494,22 +579,24 @@ function UploadDock({ useInput, inputActions }: DockProps) {
     }
   }, [refs])
 
-  if (ours.length === 0 && error === null) return null
+  if (ours.length === 0 && pending.length === 0 && error === null) return null
 
-  const removeCard = (ref: string, offset: number) => {
-    // 引用 token 是插入到 draft 的裸路径；occurrence 只给 offset 不给长度，
-    // 所以从 offset 向后扫到空白/行尾，删掉整个 token，而不是只删 1 个字符。
+  const removeCard = (ref: string, offset: number, length: number) => {
+    // Harness occurrence owns the exact display range. Use it directly so a
+    // label containing spaces is removed atomically instead of leaving a
+    // broken half-reference in the draft.
     const draft = state?.draft ?? ''
-    let end = offset
-    while (end < draft.length && !/\s/.test(draft[end])) end += 1
-    const next = draft.slice(0, offset) + draft.slice(end)
+    const next = draft.slice(0, offset) + draft.slice(offset + length)
     inputActions?.setDraft(next)
-    const wasUpload = uploadMeta.has(ref)
+    const meta = uploadMeta.get(ref)
     uploadMeta.delete(ref)
     uploadedPool.delete(ref)
     // 只对上传文件发删除；工作区相对路径引用不触碰 host 存储。
-    if (wasUpload) {
-      void fetch(`/api/upload?path=${encodeURIComponent(ref)}`, { method: 'DELETE' }).catch(() => {})
+    if (meta !== undefined) {
+      void fetch(`/api/upload?path=${encodeURIComponent(ref)}`, {
+        method: 'DELETE',
+        headers: { 'x-session-id': meta.sessionId }
+      }).catch(() => {})
     }
   }
 
@@ -525,6 +612,33 @@ function UploadDock({ useInput, inputActions }: DockProps) {
           </button>
         </div>
       )}
+      {pending.map((item) => {
+        const { bg, ext } = badgeStyle(item.name)
+        const failed = item.status === 'error'
+        return (
+          <div
+            className={`dsh-files-card dsh-files-card--${item.status}`}
+            key={item.id}
+            role={failed ? 'alert' : 'status'}
+          >
+            <span className="dsh-files-badge" style={{ background: bg }}>{ext}</span>
+            <span className="dsh-files-details">
+              <span className="dsh-files-name" title={item.name}>{item.name}</span>
+              <span className="dsh-files-meta">
+                <span className="dsh-files-size">{formatBytes(item.bytes)}</span>
+                <span className="dsh-files-status" title={item.error}>
+                  {failed ? item.error ?? '上传失败' : '上传中'}
+                </span>
+              </span>
+            </span>
+            {failed && (
+              <button type="button" className="dsh-files-remove" aria-label="关闭上传错误" onClick={() => dismissPending(item.id)}>
+                <IconCloseOutline16 size={12} />
+              </button>
+            )}
+          </div>
+        )
+      })}
       {ours.map((occ) => {
         const meta = uploadMeta.get(occ.ref)
         const name = meta?.name ?? nameFromPath(occ.ref)
@@ -534,18 +648,21 @@ function UploadDock({ useInput, inputActions }: DockProps) {
             <span className="dsh-files-badge" style={{ background: bg }}>
               {ext}
             </span>
-            <span className="dsh-files-name" title={occ.ref}>
-              {name}
+            <span className="dsh-files-details">
+              <span className="dsh-files-name" title={occ.ref}>{name}</span>
+              <span className="dsh-files-meta">
+                {meta !== undefined && meta.bytes > 0 && (
+                  <span className="dsh-files-size">{formatBytes(meta.bytes)}</span>
+                )}
+                <span className="dsh-files-status">{readyLabel(meta)}</span>
+              </span>
             </span>
-            {meta !== undefined && meta.bytes > 0 && (
-              <span className="dsh-files-size">{formatBytes(meta.bytes)}</span>
-            )}
             <Tooltip label="移除" side="top">
               <button
                 type="button"
                 className="dsh-files-remove"
                 aria-label="移除"
-                onClick={() => removeCard(occ.ref, occ.offset)}
+                onClick={() => removeCard(occ.ref, occ.offset, occ.length)}
               >
                 <IconCloseOutline16 size={12} />
               </button>
@@ -577,7 +694,8 @@ export function apply(ctx: {
       name: SOURCE_NAME,
       order: 0,
       showGroupTitle: false,
-      // @ 双源：工作区文件（相对路径注入，agent 按 cwd 解析）+ 本会话已上传文件（绝对路径）。
+      // @ 双源：工作区文件 + 本会话已上传文件；二者都以 workspace-relative
+      // path 注入，agent 按 session cwd 解析，不暴露用户绝对路径。
       // 工作区源在前、上传源在后；端点不可用时静默降级为仅上传源。
       candidates: async () => {
         const workspace = await fetchWorkspaceFiles()
@@ -600,23 +718,23 @@ export function apply(ctx: {
         }
         return items
       },
-      onPick: (pick) => {
+      onPick: (pick: unknown) => {
         const p = pick as { candidate?: { value?: string; name?: string } }
         const ref = p.candidate?.value
-        if (ref === undefined || ref === '') return undefined
+        if (ref === undefined || !isRepresentableFileRef(ref)) return undefined
         return {
           insert: {
             source: SOURCE_NAME,
             ref,
             label: p.candidate?.name ?? nameFromPath(ref),
             appearance: 'file',
-            clipboardText: ref
+            clipboardText: modelFileMention(ref)
           }
         }
       },
       codec: {
-        clipboardText: (ref: string) => ref,
-        serialize: async (ref: string) => ref
+        clipboardText: (ref: string) => modelFileMention(ref),
+        serialize: async (ref: string) => modelFileMention(ref)
       }
     })
   )
@@ -652,15 +770,5 @@ export function apply(ctx: {
   )
 }
 
-// 修复：client bundle 必须导出插件对象，否则 cordis 报
-// "invalid plugin, expect function or object with an apply method"。
-// esbuild iife 格式不会自动把 entry 导出写入 module.exports，
-// 这里显式赋值（banner 已定义 module 变量，运行时存在）。
-// 参考官方双面插件：exports.apply = apply; exports.inject = inject;
-declare const module: { exports: unknown } | undefined
-if (typeof module !== 'undefined' && module !== null) {
-  module.exports = {
-    apply,
-    inject: ['slots', 'inputTriggers', 'sessions']
-  }
-}
+// CommonJS build output exposes this alongside apply to the Harness loader.
+export const inject = ['slots', 'inputTriggers', 'sessions'] as const
