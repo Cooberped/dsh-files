@@ -28,7 +28,7 @@ interface SearchDocumentsContext {
 
 interface ParsedSearchArgs {
   filePaths: string[]
-  query: string
+  query?: string
   limit: number
 }
 
@@ -54,11 +54,17 @@ function parseArgs(args: Record<string, unknown>, config: SearchDocumentsConfig)
       filePaths.push(path)
     }
   }
-  if (typeof args.query !== 'string' || args.query.trim() === '') throw new Error('query must be a non-empty string')
-  const query = args.query.trim().normalize('NFC')
-  const plan = buildQueryPlan(query)
-  if (plan.phrases.length === 0 && plan.singleCharacters.length === 0) {
-    throw new Error('query must contain at least one letter, number, or CJK character')
+  let query: string | undefined
+  if (args.query !== undefined) {
+    if (typeof args.query !== 'string') throw new Error('query must be a string when provided')
+    const candidate = args.query.trim().normalize('NFC')
+    if (candidate !== '') {
+      const plan = buildQueryPlan(candidate)
+      if (plan.phrases.length === 0 && plan.singleCharacters.length === 0) {
+        throw new Error('query must contain at least one letter, number, or CJK character')
+      }
+      query = candidate
+    }
   }
   const limit = args.limit === undefined ? config.maxResults : args.limit
   if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > config.maxResults) {
@@ -170,10 +176,24 @@ async function bytesForIndex(
 }
 
 function renderResults(value: {
+  mode: 'index' | 'search'
   query: string
   backend: string
+  indexedDocuments: number
+  documents: Array<{ path: string; format: string; version: string }>
   results: Array<{ path: string; format: string; version: string; coordinate: string; heading: string; text: string }>
 }): string {
+  if (value.mode === 'index') {
+    const header = `### document index — ${value.documents.length} document(s); backend ${value.backend}; newly indexed ${value.indexedDocuments}`
+    const documents = value.documents.map((document, index) =>
+      `${index + 1}. ${document.path} (${document.format}) [version ${document.version.slice(0, 12)}]`
+    )
+    return [
+      header,
+      ...documents,
+      'Index ready. No document body text was returned; use search_documents with a short query when the user asks a concrete question.'
+    ].join('\n')
+  }
   const header = `### document search — ${value.results.length} result(s); backend ${value.backend}; query ${JSON.stringify(value.query)}`
   if (value.results.length === 0) return `${header}\nNo matching evidence found in the selected documents.`
   const parts = value.results.map((result, index) => [
@@ -197,7 +217,7 @@ export function defineSearchDocumentsTool(
   return defineTool({
     name: 'search_documents',
     description:
-      'Search selected PDF/DOCX/XLSX/text files locally before reading long documents. Pass every relevant file path and a short keyword or exact phrase (omit question filler). Returns versioned evidence blocks with page/line/Sheet!Range coordinates. Use read_document only to expand a returned coordinate; do not use Python or Bash for supported files.',
+      'Index or search selected PDF/DOCX/XLSX/text files locally before reading long documents. Omit query when the user asks to first read, understand or prepare files without a concrete question: this builds the private index and returns only a compact inventory, not document body text. For a concrete question, pass a short keyword or exact phrase (omit question filler) to receive versioned page/line/Sheet!Range evidence. Use read_document only to expand a returned coordinate; do not use Python or Bash for supported files.',
     parameters: {
       file_paths: {
         type: 'array',
@@ -207,8 +227,7 @@ export function defineSearchDocumentsTool(
       },
       query: {
         type: 'string',
-        required: true,
-        description: 'Short keywords or one exact phrase. Chinese phrase order is preserved; Q3/IPD-style tokens remain whole.'
+        description: 'Optional short keywords or one exact phrase. Omit to index/prepare the files without returning body text. Chinese phrase order is preserved; Q3/IPD-style tokens remain whole.'
       },
       limit: {
         type: 'integer',
@@ -220,9 +239,23 @@ export function defineSearchDocumentsTool(
         type: 'object',
         additionalProperties: false,
         properties: {
+          mode: { type: 'string', required: true, enum: ['index', 'search'] },
           query: { type: 'string', required: true },
           backend: { type: 'string', required: true, enum: ['sqlite-fts5', 'js-memory'] },
           indexedDocuments: { type: 'integer', required: true },
+          documents: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                path: { type: 'string', required: true },
+                format: { type: 'string', required: true, enum: ['pdf', 'docx', 'xlsx', 'text'] },
+                version: { type: 'string', required: true }
+              }
+            }
+          },
           results: {
             type: 'array',
             required: true,
@@ -289,20 +322,34 @@ export function defineSearchDocumentsTool(
         backend.gc(now, config.documentTtlMs, config.queryLogTtlMs)
         lastGcAt = now
       }
+      const documents = sources.map((source) => source.descriptor)
+      if (input.query === undefined) {
+        return {
+          mode: 'index' as const,
+          query: '',
+          backend: backend.kind,
+          indexedDocuments,
+          documents,
+          results: []
+        }
+      }
       const plan = buildQueryPlan(input.query)
       const results = backend.search(plan, documentIds, input.limit)
       backend.logQuery(plan.normalizedQuery, documentIds, results.length, now)
       return {
+        mode: 'search' as const,
         query: plan.normalizedQuery,
         backend: backend.kind,
         indexedDocuments,
+        documents,
         results: results.map(({ documentId: _documentId, ...result }) => result)
       }
     },
     presentCall(args) {
+      const query = typeof args.query === 'string' ? args.query.trim() : ''
       return {
         card: 'generic',
-        title: `Search documents: ${args.query}`,
+        title: query === '' ? 'Index documents' : `Search documents: ${query}`,
         kind: 'read',
         locations: args.file_paths.map((path) => ({ path }))
       }
@@ -313,7 +360,9 @@ export function defineSearchDocumentsTool(
       if (value === undefined) return undefined
       return {
         card: 'generic',
-        title: `Document search (${value.results.length})`,
+        title: value.mode === 'index'
+          ? `Document index (${value.documents.length})`
+          : `Document search (${value.results.length})`,
         content: [{ type: 'text', text: renderResults(value) }]
       }
     }

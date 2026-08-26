@@ -151,7 +151,7 @@ test('synthetic PDF/XLSX/DOCX build coordinate-bearing blocks without parser cha
   assert.ok(docxBlocks.some((block) => block.coordinate.startsWith('line') && block.text.includes('AX-17')))
 })
 
-test('search_documents indexes selected files once and returns structured local evidence', async () => {
+test('search_documents index mode returns a compact inventory before query retrieval', async () => {
   const files = new Map<string, Uint8Array>()
   for (const file of ['atlas-kickoff.pdf', 'atlas-metrics.xlsx', '流程绩效-Café会议纪要.docx']) {
     files.set(file, new Uint8Array(await readFile(join(fixtureDir, file))))
@@ -197,25 +197,45 @@ test('search_documents indexes selected files once and returns structured local 
     signal: new AbortController().signal,
     agent: { session: { header: { cwd: '/workspace' } } }
   } as unknown as Parameters<typeof tool.execute>[1]
-  const args = {
+  const indexArgs = {
+    file_paths: [...files.keys()]
+  }
+  const searchArgs = {
     file_paths: [...files.keys()],
     query: 'R-42',
     limit: 12
   }
   try {
-    const first = await tool.execute(args, exec) as {
+    const indexed = await tool.execute(indexArgs, exec) as {
+      mode: string
+      query: string
+      backend: string
+      indexedDocuments: number
+      documents: Array<{ path: string; format: string; version: string }>
+      results: unknown[]
+    }
+    assert.equal(indexed.mode, 'index')
+    assert.equal(indexed.query, '')
+    assert.equal(indexed.backend, 'js-memory')
+    assert.equal(indexed.indexedDocuments, 3)
+    assert.equal(indexed.documents.length, 3)
+    assert.deepEqual(indexed.results, [])
+
+    const first = await tool.execute(searchArgs, exec) as {
+      mode: string
       backend: string
       indexedDocuments: number
       results: Array<{ path: string; coordinate: string; text: string }>
     }
+    assert.equal(first.mode, 'search')
     assert.equal(first.backend, 'js-memory')
-    assert.equal(first.indexedDocuments, 3)
+    assert.equal(first.indexedDocuments, 0)
     assert.ok(first.results.some((result) => result.path.endsWith('.pdf') && result.coordinate === 'page:2'))
     assert.ok(first.results.some((result) => result.coordinate === '隐藏映射!A2:C2'))
-    const second = await tool.execute(args, exec) as { indexedDocuments: number }
+    const second = await tool.execute(searchArgs, exec) as { indexedDocuments: number }
     assert.equal(second.indexedDocuments, 0)
     assert.equal(readCount, 3, 'unchanged fs versions should not reread full file bytes')
-    assert.equal(observations.length, 6)
+    assert.equal(observations.length, 9)
   } finally {
     backend.close()
   }

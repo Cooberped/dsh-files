@@ -162,7 +162,7 @@ export function apply(ctx: any, config: DocsConfig): void {
     ctx.systemPrompt.section({
       name: 'tool:search-documents',
       order: 105,
-      text: 'For questions about one or more attached PDF/DOCX/XLSX/text files, call search_documents first with every relevant file path and a short keyword or exact phrase. Use its versioned page/line/Sheet!Range evidence directly; call read_document only when a returned coordinate needs expansion. Do not scan the whole document repeatedly, and do not use Python or shell libraries unless these tools return an explicit error or unsupported-feature notice.'
+      text: 'For every task involving one or more attached PDF/DOCX/XLSX/text files, call search_documents first with every relevant file path. If the user asks to first read, understand, ingest or prepare the files without a concrete question, omit query: this builds the private local index and returns only a compact inventory, so do not pre-read the files with read_document. For a concrete question, pass a short keyword or exact phrase and use the returned versioned page/line/Sheet!Range evidence directly. Call read_document only when a returned coordinate needs expansion. Do not scan whole documents repeatedly, and do not use Python or shell libraries unless these tools return an explicit error or unsupported-feature notice.'
     })
     ctx.tools.register(
       defineSearchDocumentsTool(
