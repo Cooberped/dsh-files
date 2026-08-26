@@ -1,6 +1,6 @@
 {
   "name": "dsh-files",
-  "version": "0.5.0-local.3",
+  "version": "0.5.0-local.5",
   "description": "DeepSeek Harness document-ingestion plugin: native upload states and workspace-relative @file references; session-isolated storage with recursive TTL cleanup and sha256 dedup; native visual attachments; plus a read_document tool for text/PDF/DOCX/XLSX with content sniffing, coordinate-aware spreadsheet ranges and fail-closed truncation metadata.",
   "keywords": [
     "deepseek",

@@ -10,6 +10,10 @@ function list<T>(value: ArrayLike<T> | null | undefined): T[] {
   return value === null || value === undefined ? [] : Array.from(value)
 }
 
+function canonicalFileIdentity(value: string): string {
+  return value.normalize('NFC')
+}
+
 export function isRasterImage(file: Pick<File, 'name' | 'type'>): boolean {
   const type = (file.type ?? '').toLowerCase()
   return RASTER_MIME_TYPES.has(type) || RASTER_FILE_NAME.test(file.name)
@@ -69,38 +73,50 @@ export function shouldOwnDocumentDrop(transfer: DataTransfer | null): boolean {
 export async function collectDroppedFiles(transfer: DataTransfer | null): Promise<File[]> {
   const files: File[] = []
   if (transfer === null) return files
+
+  // DataTransfer is only guaranteed to expose its protected drag data while
+  // the drop event is being dispatched. Finder/Chromium can clear `files` and
+  // make DataTransferItem accessors return null as soon as this function hits
+  // its first await. Snapshot both browser views before any directory walk.
+  //
+  // This matters for a Finder multi-selection: walking the first FileSystemEntry
+  // yields to the microtask queue, after which a late read of transfer.files can
+  // contain only the first item (or be empty).
+  const itemSnapshots = list(transfer.items)
+    .filter((item) => item.kind === 'file')
+    .map((item) => ({ entry: entryFor(item), file: fileFor(item) }))
+  const fallbackFiles = list(transfer.files)
+
   const gotPaths = new Set<string>()
   const gotFingerprints = new Set<string>()
   const gotObjects = new WeakSet<object>()
   const addFile = (file: File, entryPath = '', fallback = false) => {
     if (gotObjects.has(file)) return
-    const pathKey = entryPath || file.webkitRelativePath || file.name
-    const fingerprint = [file.name, file.type, file.size, file.lastModified].join('\u0000')
+    // Finder commonly exposes decomposed (NFD) names while another
+    // DataTransfer view exposes the same path as NFC. Canonicalize comparison
+    // keys only: the server separately normalizes the stored display name.
+    const pathKey = canonicalFileIdentity(entryPath || file.webkitRelativePath || file.name)
+    const fingerprint = [
+      canonicalFileIdentity(file.name),
+      file.type.toLowerCase(),
+      file.size,
+      file.lastModified
+    ].join('\u0000')
     if (gotPaths.has(pathKey) || (fallback && gotFingerprints.has(fingerprint))) return
     gotObjects.add(file)
     gotPaths.add(pathKey)
     gotFingerprints.add(fingerprint)
     files.push(file)
   }
-  const visit = async (item: DataTransferItem | FileSystemEntry): Promise<void> => {
-    if ('webkitGetAsEntry' in item) {
-      const entry = entryFor(item)
-      if (entry === null) {
-        const file = fileFor(item)
-        if (file !== null) addFile(file)
-        return
-      }
-      await visit(entry)
-      return
-    }
-    if (item.isFile) {
-      const fileEntry = item as FileSystemFileEntry
+  const visit = async (entry: FileSystemEntry): Promise<void> => {
+    if (entry.isFile) {
+      const fileEntry = entry as FileSystemFileEntry
       const file = await new Promise<File | null>((resolve) => fileEntry.file(resolve))
       if (file !== null) addFile(file, fileEntry.fullPath)
       return
     }
-    if (item.isDirectory) {
-      const reader = (item as FileSystemDirectoryEntry).createReader()
+    if (entry.isDirectory) {
+      const reader = (entry as FileSystemDirectoryEntry).createReader()
       while (true) {
         const batch = await new Promise<FileSystemEntry[] | null>((resolve) => reader.readEntries(resolve))
         if (batch === null || batch.length === 0) break
@@ -108,12 +124,18 @@ export async function collectDroppedFiles(transfer: DataTransfer | null): Promis
       }
     }
   }
-  for (const item of list(transfer.items)) {
-    if (item.kind === 'file') await visit(item)
+  for (const snapshot of itemSnapshots) {
+    // getAsFile() is the synchronous, event-lifetime-safe path for ordinary
+    // files. Preserve the entry path when available for folder semantics.
+    if (snapshot.file !== null) {
+      addFile(snapshot.file, snapshot.entry?.fullPath ?? '')
+      continue
+    }
+    if (snapshot.entry !== null) await visit(snapshot.entry)
   }
   // DataTransfer.items can be partial or unavailable for Finder-originated
   // multi-selection. Merge DataTransfer.files instead of treating either view
   // as authoritative; addFile removes the ordinary duplicate entries.
-  for (const file of list(transfer.files)) addFile(file, '', true)
+  for (const file of fallbackFiles) addFile(file, '', true)
   return files
 }

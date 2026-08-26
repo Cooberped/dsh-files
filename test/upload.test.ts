@@ -19,6 +19,13 @@ test('sanitizeFileName strips control chars, separators, dot segments and leadin
   assert.equal(sanitizeFileName('x'.repeat(200) + '.pdf').length <= 120, true)
 })
 
+test('sanitizeFileName stores Finder NFD names as NFC', () => {
+  const nfc = '流程绩效-Café.pdf'
+  const nfd = nfc.normalize('NFD')
+  assert.notEqual(nfd, nfc)
+  assert.equal(sanitizeFileName(nfd), nfc)
+})
+
 test('sanitizeSessionId keeps a safe alphabet', () => {
   assert.equal(sanitizeSessionId('session-12'), 'session-12')
   assert.equal(sanitizeSessionId('../etc'), '_etc')

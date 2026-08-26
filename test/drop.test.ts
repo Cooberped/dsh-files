@@ -2,8 +2,18 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { collectDroppedFiles, shouldOwnDocumentDrop } from '../src/client/drop.ts'
 
-function file(name: string, type: string): File {
-  return { name, type, webkitRelativePath: '' } as File
+function file(
+  name: string,
+  type: string,
+  options: { size?: number; lastModified?: number; webkitRelativePath?: string } = {}
+): File {
+  return {
+    name,
+    type,
+    size: options.size ?? 0,
+    lastModified: options.lastModified ?? 0,
+    webkitRelativePath: options.webkitRelativePath ?? ''
+  } as File
 }
 
 function transfer(files: File[], items: DataTransferItem[] = []): DataTransfer {
@@ -56,6 +66,44 @@ test('collectDroppedFiles merges partial items with files and keeps all three do
   // exposes the complete selection. The common PDF must not be duplicated.
   const result = await collectDroppedFiles(transfer([pdf, docx, xlsx], [itemFor(pdf)]))
   assert.deepEqual(result.map((entry) => entry.name), ['one.pdf', 'two.docx', 'three.xlsx'])
+})
+
+test('collectDroppedFiles snapshots Finder files before drag data expires', async () => {
+  const pdf = file('one.pdf', 'application/pdf')
+  const docx = file('two.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+  const xlsx = file('three.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  let live = true
+  const transient = {
+    types: ['Files'],
+    get files() {
+      return live ? [pdf, docx, xlsx] : []
+    },
+    get items() {
+      return live ? [itemFor(pdf)] : []
+    }
+  } as unknown as DataTransfer
+
+  // Chromium protects/clears the drag store when the drop dispatch ends. The
+  // first FileSystemEntry await yields to this transition.
+  queueMicrotask(() => {
+    live = false
+  })
+
+  const result = await collectDroppedFiles(transient)
+  assert.deepEqual(result.map((entry) => entry.name), ['one.pdf', 'two.docx', 'three.xlsx'])
+})
+
+test('collectDroppedFiles treats Finder NFD and browser NFC views as one file', async () => {
+  const nfcName = '流程绩效-Café.pdf'
+  const nfdName = nfcName.normalize('NFD')
+  assert.notEqual(nfdName, nfcName)
+  const itemView = file(nfdName, 'application/pdf', { size: 42, lastModified: 7 })
+  const filesView = file(nfcName, 'application/pdf', { size: 42, lastModified: 7 })
+
+  const result = await collectDroppedFiles(transfer([filesView], [itemFor(itemView)]))
+
+  assert.equal(result.length, 1)
+  assert.equal(result[0], itemView)
 })
 
 test('text drags are ignored', () => {
