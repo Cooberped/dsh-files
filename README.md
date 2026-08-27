@@ -12,6 +12,8 @@
 
 One package, one line of cordis config. A composer paperclip for uploads, a document-reading tool for the model, and native image support that hands JPEG/PNG/WebP/GIF to any vision-capable model.
 
+> **Part of the taxueseek DeepSeek Harness plugin lineup** — flagship: [argo](https://github.com/taxueseek/argo) (search infrastructure for agents) · siblings: [dsh-snippets](https://github.com/taxueseek/dsh-snippets) (snippet favorites) · [dsh-healthcheck](https://github.com/taxueseek/dsh-healthcheck) (read-only checkup) · [dsh-plugin-guard](https://github.com/taxueseek/dsh-plugin-guard) (plugin security audit) · [taxue-dsh-artisan](https://github.com/taxueseek/taxue-dsh-artisan) (prompt reverse-engineering & multi-provider image generation) — see all plugins on the [profile](https://github.com/taxueseek#deepseek-harness-plugins)
+
 <p align="center">
   <img src="assets/composer.png" alt="DeepSeek Harness composer: paperclip upload button and colored file cards" width="900">
 </p>
