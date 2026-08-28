@@ -1,8 +1,8 @@
 # dsh-upload bundle patch: one insert registering the dual-face plugin.
-# The row id must match the node half's exported cordis `name`.
+# `name` is the installable package name. The row id stays stable across scopes.
 - insert:
     - id: files-toolkit
-      name: 'dsh-files'
+      name: '@cooberped/dsh-files'
       config:
         maxFileBytes: 25165824
         readLimit: 2000

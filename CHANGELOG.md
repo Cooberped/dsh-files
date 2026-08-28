@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0-beta.1（Cooberped 社区发布候选，尚未发布 npm）
+
+- 以保留完整历史的公开 fork 形式转由 `Cooberped/dsh-files` 独立维护；继续保留 `taxueseek/dsh-files` 的 MIT 版权与 upstream 归属。
+- npm 包名改为计划中的 `@cooberped/dsh-files`，并用 `beta` dist-tag 防止 prerelease 误占 `latest`。
+- DSH peer 依赖收紧为真实验收使用的 `0.1.1-rc.2`；README 明示 Developer Preview 与 Node 持久索引能力边界。
+- 增加社区治理、发布、第三方许可、素材来源和只读 CI 门禁；真实 HR 文件、会话索引及本机日志不进入仓库或 npm 包。
+- 该候选只有在 npm scope 所有权、PDF.js Liberation 字体许可口径和截图公开授权三项确认后才允许公开发布。
+
 ## 0.6.0-local.11（独立审计修正候选，未发布）
 
 `0.6.0-local.10` 未安装、未发布，并因独立安全审计发现以下问题而被拒绝。本候选在保留其加固项的基础上修正：

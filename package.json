@@ -1,20 +1,30 @@
 {
-  "name": "dsh-files",
-  "version": "0.6.0-local.11",
-  "description": "DeepSeek Harness document-ingestion plugin: native uploads and visual attachments; plus local search_documents retrieval and read_document coordinate expansion for text/PDF/DOCX/XLSX/PPTX, with SQLite FTS5 and dependency-free JS fallback.",
+  "name": "@cooberped/dsh-files",
+  "version": "0.6.0-beta.1",
+  "description": "Independent community DeepSeek Harness plugin for secure multi-file upload, native images, local document retrieval, and coordinate-aware text/PDF/DOCX/XLSX/PPTX reading.",
   "keywords": [
-    "deepseek",
-    "harness",
+    "deepseek-harness",
     "dsh",
+    "dsh-plugin",
     "cordis",
-    "plugin",
-    "upload",
-    "attachment",
+    "document-ingestion",
+    "document-parser",
+    "document-retrieval",
+    "file-upload",
     "pdf",
     "docx",
     "xlsx",
-    "pptx"
+    "pptx",
+    "fts5"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cooberped/dsh-files.git"
+  },
+  "homepage": "https://github.com/Cooberped/dsh-files#readme",
+  "bugs": {
+    "url": "https://github.com/Cooberped/dsh-files/issues"
+  },
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -26,10 +36,17 @@
     "lib",
     "cordis.patch.yml",
     "CHANGELOG.md",
+    "THIRD_PARTY_NOTICES.md",
     "README.md",
     "README.zh.md"
   ],
   "license": "MIT",
+  "packageManager": "pnpm@10.34.5",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public",
+    "tag": "beta"
+  },
   "engines": {
     "node": ">=20.12.0"
   },
@@ -53,12 +70,12 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
-    "@deepseek-ai/dsh-client-locale": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-client-ui-conversation": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-client-ui-primitives": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-fs": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-locale": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-runtime": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-fs": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.1.1-rc.2",
     "@deepseek-ai/schemastery": "^3.18.1",
     "react": "^18.2.0"
   },
@@ -82,12 +99,17 @@
   "scripts": {
     "build": "tsc -p tsconfig.client.json && tsc -p tsconfig.build.json && node build.mjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.client.json",
+    "pretest": "node benchmark/generate-fixtures.mjs",
     "test": "node --test",
     "benchmark:fixtures": "node benchmark/generate-fixtures.mjs",
     "benchmark:validate": "node benchmark/generate-fixtures.mjs && node benchmark/validate-fixtures.mjs",
     "benchmark:retrieval": "node benchmark/generate-fixtures.mjs && node benchmark/run-retrieval.mjs",
     "benchmark:validate-real": "node benchmark/validate-real-manifest.mjs",
-    "prepublishOnly": "npm run build && npm test"
+    "license:check": "node scripts/check-licenses.mjs",
+    "package:check": "node scripts/check-package.mjs",
+    "runtime:smoke": "node scripts/runtime-smoke.mjs",
+    "release:check": "npm run typecheck && npm run build && npm test && npm run benchmark:retrieval && npm run license:check && npm run package:check",
+    "prepublishOnly": "npm run release:check"
   },
   "allowScripts": {
     "esbuild@0.24.2": true

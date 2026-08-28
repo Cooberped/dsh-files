@@ -5,17 +5,17 @@
 </div>
 
 <p align="center">
-  <img src="assets/readme/hero.svg" width="100%" alt="dsh-files: one package. A composer paperclip for uploads, a document-reading tool for the model, and native image support for vision models.">
+  <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/readme/hero.svg" width="100%" alt="dsh-files: one package. A composer paperclip for uploads, a document-reading tool for the model, and native image support for vision models.">
 </p>
 
 # dsh-files
 
 One package, one line of cordis config. A composer paperclip for uploads, a document-reading tool for the model, and native image support that hands JPEG/PNG/WebP/GIF to any vision-capable model.
 
-> **Part of the taxueseek DeepSeek Harness plugin lineup** — flagship: [argo](https://github.com/taxueseek/argo) (search infrastructure for agents) · siblings: [dsh-snippets](https://github.com/taxueseek/dsh-snippets) (snippet favorites) · [dsh-healthcheck](https://github.com/taxueseek/dsh-healthcheck) (read-only checkup) · [dsh-plugin-guard](https://github.com/taxueseek/dsh-plugin-guard) (plugin security audit) · [taxue-dsh-artisan](https://github.com/taxueseek/taxue-dsh-artisan) (prompt reverse-engineering & multi-provider image generation) — see all plugins on the [profile](https://github.com/taxueseek#deepseek-harness-plugins)
+> **Independent community fork.** This project is based on the MIT-licensed [taxueseek/dsh-files](https://github.com/taxueseek/dsh-files) and is independently maintained by the Cooberped community. It is not affiliated with or endorsed by DeepSeek. DeepSeek and related marks belong to their respective owners.
 
 <p align="center">
-  <img src="assets/composer.png" alt="DeepSeek Harness composer: paperclip upload button and colored file cards" width="900">
+  <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/composer.png" alt="DeepSeek Harness composer: paperclip upload button and colored file cards" width="900">
 </p>
 
 DeepSeek Harness dual-face plugin. Four capabilities:
@@ -32,7 +32,7 @@ DeepSeek Harness dual-face plugin. Four capabilities:
 - **Three entry points**: a paperclip button in the composer toolbar for multi-select files, a folder button for an entire directory (the browser flattens the tree and preserves relative paths per sub-directory), and drag-and-drop anywhere on the page. Document/directory drops are captured before Harness' image-only handler while pure raster drops remain native. Batch uploads are bounded to 4 concurrent requests, and a per-file failure never blocks the rest.
 
 <p align="center">
-  <img src="assets/upload-folder-images.png" alt="Batch folder upload: multiple images uploaded at once and shown as a grid" width="900">
+  <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/upload-folder-images.png" alt="Batch folder upload: multiple images uploaded at once and shown as a grid" width="900">
 </p>
 
 - **Folder batch upload**: selecting or dropping a folder recursively flattens its files, keeps the sub-directory layout under the session dir, and uploads with bounded concurrency — so a whole folder's content lands in one go.
@@ -49,7 +49,7 @@ DeepSeek Harness dual-face plugin. Four capabilities:
 - **Native UI**: the attachment is rendered by the harness's stock `conversation.input.attachments` rail — thumbnail, click-to-zoom lightbox, native remove — so images look native instead of a grey badge card. dsh-files does not inject that slot; it hands the image to the core and lets the official components render it.
 
 <p align="center">
-  <img src="assets/native-image-dialog.png" alt="Vision model reading an uploaded image through the native pipeline" width="900">
+  <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/native-image-dialog.png" alt="Vision model reading an uploaded image through the native pipeline" width="900">
 </p>
 
 ### Document reading
@@ -87,7 +87,7 @@ DeepSeek Harness dual-face plugin. Four capabilities:
 ## Install
 
 ```sh
-dsh plugin --profile web add dsh-files
+dsh plugin --profile web add @cooberped/dsh-files@beta
 # restart dsh web
 ```
 
@@ -95,7 +95,7 @@ dsh plugin --profile web add dsh-files
 
 ```yaml
 - id: upload-toolkit
-  name: 'dsh-files'
+  name: '@cooberped/dsh-files'
   config:
     maxFileBytes: 25165824        # per-document read byte cap
     readLimit: 800                # default lines per call (cheap pagination)
@@ -127,7 +127,9 @@ dsh plugin --profile web add dsh-files
 
 `trustedHosts` means “this reverse-proxy authority is an allowed deployment entry”; it is **not user authentication**. The current official Harness WebServer route does not expose request identity or session ownership to plugins, so this plugin cannot prove that a supplied `x-session-id` belongs to the caller; hashing the directory name does not create authorization. Use loopback-only self-hosting, or an authenticated reverse proxy that also constrains session access. TLS may terminate upstream, but Origin hostname/port authority must still match.
 
-Node.js `>=20.12.0` is required. Node 20 can use the complete but process-local JS retrieval backend; a Harness runtime with `node:sqlite` and FTS5 automatically gets the private persistent backend. The actual selection is shown in tool output.
+Node.js `>=20.12.0` is required. Node 20 uses the complete but process-local JS retrieval backend. A Harness runtime needs Node.js `>=22.5.0`, `node:sqlite`, and FTS5 before the private persistent backend can be selected; startup probes the actual runtime and safely falls back when any capability is missing. The actual selection is shown in tool output.
+
+This beta is tested with `@deepseek-ai/dsh@0.1.1-rc.2` using the `web` profile. DeepSeek Harness is still a Developer Preview, so the beta intentionally pins the tested peer versions instead of claiming broad prerelease compatibility.
 
 ## Development
 
@@ -136,9 +138,9 @@ pnpm install
 pnpm test          # upload / parse / cache regression
 pnpm benchmark:retrieval # 11 synthetic correctness classes on SQLite and JS
 pnpm build         # esbuild client bundle
-npx tsc --noEmit   # type check
+pnpm typecheck     # type check
 ```
 
 ## License
 
-MIT
+Project code is licensed under the [MIT License](LICENSE). The original `taxueseek/dsh-files` copyright and history are retained; new contributions are provided under the same license. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for dependency and bundled-data notices. Repository screenshots and third-party marks are not automatically relicensed under MIT; see [assets/README.md](assets/README.md).

@@ -5,17 +5,17 @@
 </div>
 
 <p align="center">
-  <img src="assets/readme/hero.svg" width="100%" alt="dsh-files：一个包。Web UI 回形针上传，模型读文档，还能把图片喂给任何视觉模型。">
+  <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/readme/hero.svg" width="100%" alt="dsh-files：一个包。Web UI 回形针上传，模型读文档，还能把图片喂给任何视觉模型。">
 </p>
 
 # dsh-files
 
 一个包，一行 cordis 配置。Web UI 多一个回形针，模型多一个读文档的工具，还能把图片直接交给任何支持视觉的模型。
 
-> **这是踏雪寻仙 DeepSeek Harness 插件矩阵的一员**，主打是 [argo](https://github.com/taxueseek/argo)（给 Agent 的搜索基础设施），同门还有：[dsh-snippets](https://github.com/taxueseek/dsh-snippets)（片段收藏夹） · [dsh-healthcheck](https://github.com/taxueseek/dsh-healthcheck)（只读体检） · [dsh-plugin-guard](https://github.com/taxueseek/dsh-plugin-guard)（插件安全审计） · [taxue-dsh-artisan](https://github.com/taxueseek/taxue-dsh-artisan)（提示词反推与多供应商生图）—— 完整插件栏目见[个人主页](https://github.com/taxueseek#deepseek-harness-%E6%8F%92%E4%BB%B6)
+> **独立社区 fork。** 本项目基于 MIT 许可的 [taxueseek/dsh-files](https://github.com/taxueseek/dsh-files)，由 Cooberped 社区独立维护。本项目与 DeepSeek 不存在隶属或官方背书关系；DeepSeek 及相关标识归各自权利人所有。
 
 <p align="center">
-  <img src="assets/composer.png" alt="DeepSeek Harness 输入框里的回形针上传按钮与彩色文件卡片" width="900">
+  <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/composer.png" alt="DeepSeek Harness 输入框里的回形针上传按钮与彩色文件卡片" width="900">
 </p>
 
 DeepSeek Harness 双面插件（dual-face plugin）。四项能力：
@@ -32,7 +32,7 @@ DeepSeek Harness 双面插件（dual-face plugin）。四项能力：
 - **三种入口**：输入框工具栏**回形针按钮**选择文件（多选），或旁边的**文件夹按钮**选择整个目录（浏览器递归展平、按子目录层级保留相对路径），或直接把文件/文件夹**拖到页面任意位置**（拖拽悬停有遮罩提示）；批量上传有界并发（4），逐文件失败不阻塞其余文件
 
 <p align="center">
-  <img src="assets/upload-folder-images.png" alt="上传文件夹：一次上传多张图片，网格呈现" width="900">
+  <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/upload-folder-images.png" alt="上传文件夹：一次上传多张图片，网格呈现" width="900">
 </p>
 
 - **文件夹批量上传**：选中或拖放一个文件夹时，目录项被递归展平，子目录层级保留在会话上传目录内，并按下限并发逐文件上传——整个文件夹的内容一次到位
@@ -51,7 +51,7 @@ DeepSeek Harness 双面插件（dual-face plugin）。四项能力：
 - **原生 UI**：图片由 harness 官方 `conversation.input.attachments` rail 渲染——缩略图、点开大图、原生移除——看起来就是原生 UI，而不是灰色 badge 卡片。dsh-files 不注入该槽位，只把图片交给核心，由官方组件呈现
 
 <p align="center">
-  <img src="assets/native-image-dialog.png" alt="视觉模型通过原生管线读取上传的图片" width="900">
+  <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/native-image-dialog.png" alt="视觉模型通过原生管线读取上传的图片" width="900">
 </p>
 
 ### 文档读取
@@ -89,7 +89,7 @@ DeepSeek Harness 双面插件（dual-face plugin）。四项能力：
 ## 安装
 
 ```sh
-dsh plugin --profile web add dsh-files
+dsh plugin --profile web add @cooberped/dsh-files@beta
 # 重启 dsh web
 ```
 
@@ -97,7 +97,7 @@ dsh plugin --profile web add dsh-files
 
 ```yaml
 - id: upload-toolkit
-  name: 'dsh-files'
+  name: '@cooberped/dsh-files'
   config:
     maxFileBytes: 25165824        # 单次文档读取字节上限
     readLimit: 800                # 单次返回行数上限（默认 800，翻页成本低）
@@ -129,7 +129,9 @@ dsh plugin --profile web add dsh-files
 
 `trustedHosts` 只表示“这个反向代理 Host 是部署者允许的入口”，**不是用户鉴权**。官方 Harness WebServer 当前不向插件路由提供请求身份或 session owner，因此插件无法单独证明 `x-session-id` 属于调用者；HMAC 目录名也不能建立授权。只在回环地址自用，或在外层使用完成认证并限制 session 的反向代理。通过 Caddy/frp 部署时，可把部署 authority 加进 `trustedHosts`；Origin 的 scheme 可因上游 TLS 终结不同，但 hostname/port authority 必须一致。
 
-运行时要求 Node.js `>=20.12.0`。Node 20 可以使用功能完整但进程内、非持久的 JS 检索后端；支持 `node:sqlite` + FTS5 的 Harness runtime 会自动启用私有持久索引，实际选择会显示在工具结果中。
+运行时要求 Node.js `>=20.12.0`。Node 20 使用功能完整但进程内、非持久的 JS 检索后端；Harness runtime 至少为 Node.js `>=22.5.0`，且同时具备 `node:sqlite` 与 FTS5，才可能启用私有持久索引。插件会在实际 runtime 启动时探测，任何能力缺失都安全回退，实际选择显示在工具结果中。
+
+本 beta 使用 `@deepseek-ai/dsh@0.1.1-rc.2` 的 `web` profile 完成测试。DeepSeek Harness 仍处于 Developer Preview，因此 peer 版本有意固定为已验证版本，不宣称宽泛的 prerelease 兼容性。
 
 ## 开发
 
@@ -138,9 +140,9 @@ pnpm install
 pnpm test          # 上传 / 解析 / 缓存回归
 pnpm benchmark:retrieval # 11 类合成题在 SQLite / JS 后端同时验收
 pnpm build         # esbuild 打包客户端 bundle
-npx tsc --noEmit   # 类型检查
+pnpm typecheck     # 类型检查
 ```
 
 ## 许可
 
-MIT
+项目代码采用 [MIT License](LICENSE)。原 `taxueseek/dsh-files` 的版权与历史完整保留，新增贡献按同一许可提供。依赖与附带数据的许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。仓库截图和第三方标识不自动纳入 MIT 再许可范围，详见 [assets/README.md](assets/README.md)。
