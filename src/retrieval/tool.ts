@@ -138,11 +138,15 @@ async function readSource(
   }
   const targetKey = String(target.targetKey)
   const fsVersion = String(info.version)
+  // Preserve the caller-visible path (normally workspace-relative) in model
+  // output. target.displayPath may be an absolute host path and is reserved
+  // for internal fs observations/errors.
+  const modelPath = path.normalize('NFC')
   const cached = sourceCache.get(targetKey)
   if (cached?.fsVersion === fsVersion) {
     const descriptor = {
       ...cached.descriptor,
-      path: target.displayPath.normalize('NFC')
+      path: modelPath
     }
     // Refresh insertion order so the bounded map behaves as a small LRU.
     sourceCache.delete(targetKey)
@@ -160,7 +164,7 @@ async function readSource(
   }
   const descriptor: DocumentDescriptor = {
     id: hashBytes(targetKey),
-    path: target.displayPath.normalize('NFC'),
+    path: modelPath,
     format,
     version: retrievalDocumentVersion(bytes)
   }
