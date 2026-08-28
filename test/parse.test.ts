@@ -128,6 +128,33 @@ test('pptx follows presentation order and includes speaker notes', async () => {
   assert.match(text, /### Slide 2\nSecond logical slide/)
 })
 
+test('pptx follows relationship targets with legal nonstandard part names', async () => {
+  const zip = new JSZip()
+  zip.file('ppt/presentation.xml', `<?xml version="1.0"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst><p:sldId id="300" r:id="rCustom"/></p:sldIdLst>
+</p:presentation>`)
+  zip.file('ppt/_rels/presentation.xml.rels', `<?xml version="1.0"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rCustom" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="custom/scene-A.xml"/>
+</Relationships>`)
+  zip.file('ppt/custom/scene-A.xml', `<?xml version="1.0"?>
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Custom relationship slide</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld>
+</p:sld>`)
+  zip.file('ppt/custom/_rels/scene-A.xml.rels', `<?xml version="1.0"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rNotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="notes/note-A.xml"/>
+</Relationships>`)
+  zip.file('ppt/custom/notes/note-A.xml', `<?xml version="1.0"?>
+<p:notes xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Custom relationship note</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld>
+</p:notes>`)
+  const text = await parsePptx(new Uint8Array(await zip.generateAsync({ type: 'nodebuffer' })))
+  assert.match(text, /^### Slide 1\nCustom relationship slide/m)
+  assert.match(text, /#### Speaker notes\nCustom relationship note/)
+})
+
 test('xlsx text extraction with row limit', async () => {
   const rows: Array<Array<string | number>> = [
     ['Name', 'Score'],

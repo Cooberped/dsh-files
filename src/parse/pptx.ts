@@ -13,9 +13,6 @@ const PACKAGE_REL_NS = 'http://schemas.openxmlformats.org/package/2006/relations
 
 const PRESENTATION_PART = 'ppt/presentation.xml'
 const PRESENTATION_RELS_PART = 'ppt/_rels/presentation.xml.rels'
-const SLIDE_PART = /^ppt\/slides\/slide\d+\.xml$/u
-const SLIDE_RELS_PART = /^ppt\/slides\/_rels\/slide\d+\.xml\.rels$/u
-const NOTES_PART = /^ppt\/notesSlides\/notesSlide\d+\.xml$/u
 
 const MAX_XML_PART_BYTES = 32 * 1024 * 1024
 const MAX_TOTAL_XML_BYTES = 128 * 1024 * 1024
@@ -47,26 +44,24 @@ function parseXml(bytes: Uint8Array, partName: string, configure: (parser: Parse
   }
 }
 
-function wantedPart(name: string): boolean {
-  return name === PRESENTATION_PART || name === PRESENTATION_RELS_PART ||
-    SLIDE_PART.test(name) || SLIDE_RELS_PART.test(name) || NOTES_PART.test(name)
+interface ExpansionBudget {
+  parts: number
+  bytes: number
 }
 
-function extractRelevantParts(bytes: Uint8Array): Unzipped {
-  let acceptedParts = 0
-  let acceptedBytes = 0
+function extractSelectedParts(bytes: Uint8Array, wanted: ReadonlySet<string>, budget: ExpansionBudget): Unzipped {
   try {
     return unzipSync(bytes, {
       filter: (file) => {
-        if (!wantedPart(file.name)) return false
-        acceptedParts += 1
-        acceptedBytes += file.originalSize
-        if (acceptedParts > MAX_XML_PARTS) throw new Error(`too many relevant XML parts (limit ${MAX_XML_PARTS})`)
+        if (!wanted.has(file.name)) return false
+        budget.parts += 1
+        budget.bytes += file.originalSize
+        if (budget.parts > MAX_XML_PARTS) throw new Error(`too many relevant XML parts (limit ${MAX_XML_PARTS})`)
         if (file.originalSize > MAX_XML_PART_BYTES) {
           throw new Error(`XML part "${file.name}" is ${file.originalSize} bytes (limit ${MAX_XML_PART_BYTES})`)
         }
-        if (acceptedBytes > MAX_TOTAL_XML_BYTES) {
-          throw new Error(`relevant XML expands to ${acceptedBytes} bytes (limit ${MAX_TOTAL_XML_BYTES})`)
+        if (budget.bytes > MAX_TOTAL_XML_BYTES) {
+          throw new Error(`relevant XML expands to ${budget.bytes} bytes (limit ${MAX_TOTAL_XML_BYTES})`)
         }
         return true
       }
@@ -173,7 +168,16 @@ function notePartForSlide(parts: Unzipped, slidePart: string): string | undefine
 }
 
 export async function parsePptx(bytes: Uint8Array): Promise<string> {
-  const parts = extractRelevantParts(bytes)
+  // OOXML relationships, not conventional `slide1.xml` names, define the
+  // presentation. Read only the two bootstrap parts first, then selectively
+  // expand the relationship targets. This accepts legal custom part names
+  // without inflating unrelated charts/media or weakening the ZIP budget.
+  const budget: ExpansionBudget = { parts: 0, bytes: 0 }
+  const parts: Unzipped = extractSelectedParts(
+    bytes,
+    new Set([PRESENTATION_PART, PRESENTATION_RELS_PART]),
+    budget
+  )
   const presentation = parts[PRESENTATION_PART]
   const presentationRels = parts[PRESENTATION_RELS_PART]
   if (presentation === undefined) throw new Error(`invalid PPTX package: missing ${PRESENTATION_PART}`)
@@ -183,15 +187,32 @@ export async function parsePptx(bytes: Uint8Array): Promise<string> {
   const slideIds = presentationSlideIds(presentation)
   if (slideIds.length === 0) return '(PPTX contains no slides)'
 
-  const output: string[] = []
-  for (const [index, relationshipId] of slideIds.entries()) {
+  const orderedSlides: Array<{ relationshipId: string; part: string }> = []
+  const slideParts = new Set<string>()
+  for (const relationshipId of slideIds) {
     const relationship = rels.get(relationshipId)
     if (relationship === undefined || !relationship.type.endsWith('/slide')) {
       throw new Error(`invalid PPTX package: slide relationship ${relationshipId} is missing or not a slide`)
     }
-    const slidePart = resolvePart(PRESENTATION_PART, relationship.target)
+    const part = resolvePart(PRESENTATION_PART, relationship.target)
+    orderedSlides.push({ relationshipId, part })
+    slideParts.add(part)
+    slideParts.add(relationshipsPart(part))
+  }
+  Object.assign(parts, extractSelectedParts(bytes, slideParts, budget))
+
+  const noteParts = new Set<string>()
+  for (const slide of orderedSlides) {
+    const notePart = notePartForSlide(parts, slide.part)
+    if (notePart !== undefined) noteParts.add(notePart)
+  }
+  if (noteParts.size > 0) Object.assign(parts, extractSelectedParts(bytes, noteParts, budget))
+
+  const output: string[] = []
+  for (const [index, slide] of orderedSlides.entries()) {
+    const slidePart = slide.part
     const slideBytes = parts[slidePart]
-    if (slideBytes === undefined || !SLIDE_PART.test(slidePart)) {
+    if (slideBytes === undefined) {
       throw new Error(`invalid PPTX package: missing slide part ${slidePart}`)
     }
     const slideText = projectDrawingText(slideBytes, slidePart)
@@ -200,7 +221,7 @@ export async function parsePptx(bytes: Uint8Array): Promise<string> {
     const notePart = notePartForSlide(parts, slidePart)
     if (notePart !== undefined) {
       const noteBytes = parts[notePart]
-      if (noteBytes === undefined || !NOTES_PART.test(notePart)) {
+      if (noteBytes === undefined) {
         throw new Error(`invalid PPTX package: missing notes part ${notePart}`)
       }
       const noteText = projectDrawingText(noteBytes, notePart)
