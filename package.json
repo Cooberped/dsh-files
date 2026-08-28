@@ -110,8 +110,5 @@
     "runtime:smoke": "node scripts/runtime-smoke.mjs",
     "release:check": "npm run typecheck && npm run build && npm test && npm run benchmark:retrieval && npm run license:check && npm run package:check",
     "prepublishOnly": "npm run release:check"
-  },
-  "allowScripts": {
-    "esbuild@0.24.2": true
   }
 }
