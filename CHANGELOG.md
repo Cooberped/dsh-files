@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0-local.6（真实 Harness 合同修复，未发布）
+
+### 修复
+
+- 真实 Harness 调用发现 `search_documents.documents[]` 泄露了 schema 未声明的内部 `id`，导致工具输出被 `additionalProperties: false` 拒绝；现仅投影 `path / format / version`，并补精确键集合回归测试。
+- 本候选沿用 `0.6.0-local.5` 的全部安全、坐标、检索与性能加固；版本单独递增，避免把真实环境失败包与修复包标成同一制品。
+
 ## 0.6.0-local.5（本机加固候选，未发布）
 
 ### 修复
