@@ -5,7 +5,7 @@
 </div>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/readme/hero.svg" width="100%" alt="dsh-files 将本地文件经过上传、检索和带版本坐标回读，转化为可追溯证据，并保留原生视觉链路。">
+  <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/readme/hero.zh.svg" width="100%" alt="dsh-files 将本地文件经过上传、检索和带版本坐标回读，转化为可追溯证据，并保留原生视觉链路。">
 </p>
 
 # dsh-files
@@ -28,7 +28,7 @@
 文件不再只是 prompt 负担，而成为可寻址、可回读的证据。整个设计就是这一件事。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/readme/architecture.svg" width="100%" alt="dsh-files 架构：输入框、本地摄取、私有检索、模型工具以及原生视觉分支。">
+  <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/readme/architecture.zh.svg" width="100%" alt="dsh-files 架构：输入框、本地摄取、私有检索、模型工具以及原生视觉分支。">
 </p>
 
 ## 从源码安装
@@ -88,7 +88,7 @@ profile/plugin 合同遵循官方 [Harness 插件参考](https://github.com/deep
 ```
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/readme/evidence-loop.svg" width="100%" alt="推荐的模型证据循环：盘点、检索、展开，再根据通过版本校验的证据回答。">
+  <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/readme/evidence-loop.zh.svg" width="100%" alt="推荐的模型证据循环：盘点、检索、展开，再根据通过版本校验的证据回答。">
 </p>
 
 ## 两个工具

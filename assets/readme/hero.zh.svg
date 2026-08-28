@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="620" viewBox="0 0 1440 620" role="img" aria-labelledby="title desc">
+  <title id="title">dsh-files</title>
+  <desc id="desc">一个社区维护的 DeepSeek Harness 插件，通过上传、本地检索、坐标回读与原生视觉转交，把本地文件变成带版本的证据。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#08111f"/>
+      <stop offset="0.58" stop-color="#0d1a2d"/>
+      <stop offset="1" stop-color="#10283a"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#f3c66b"/>
+      <stop offset="1" stop-color="#5bd6c3"/>
+    </linearGradient>
+    <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.4" fill="#ffffff" opacity=".055"/>
+    </pattern>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#000000" flood-opacity=".28"/>
+    </filter>
+  </defs>
+  <rect width="1440" height="620" rx="36" fill="url(#bg)"/>
+  <rect width="1440" height="620" rx="36" fill="url(#dots)"/>
+  <path d="M0 498C268 425 444 524 700 478c291-52 459-188 740-110v252H0Z" fill="#163348" opacity=".42"/>
+
+  <g transform="translate(92 82)" font-family="Inter, &quot;PingFang SC&quot;, &quot;Hiragino Sans GB&quot;, &quot;Microsoft YaHei&quot;, &quot;Noto Sans CJK SC&quot;, &quot;Source Han Sans SC&quot;, ui-sans-serif, system-ui, sans-serif">
+    <rect width="220" height="38" rx="19" fill="#f3c66b" opacity=".12" stroke="#f3c66b" stroke-opacity=".42"/>
+    <text x="20" y="25" fill="#f6d594" font-size="15" font-weight="700" letter-spacing="2">社区插件 · 源码 BETA</text>
+    <text x="0" y="150" fill="#f8fbff" font-size="78" font-weight="760" letter-spacing="-3">dsh-files</text>
+    <rect x="2" y="176" width="104" height="7" rx="3.5" fill="url(#accent)"/>
+    <text x="0" y="242" fill="#d8e4ef" font-size="28" font-weight="520">让文件随时变成可引用的证据</text>
+    <text x="0" y="288" fill="#8fa5b8" font-size="18">本地上传 · 精准检索 · 按坐标展开 · 图片原生直通</text>
+
+    <g transform="translate(0 350)" font-size="15" font-weight="650">
+      <rect width="132" height="45" rx="22.5" fill="#172a40" stroke="#31465c"/>
+      <circle cx="23" cy="22.5" r="6" fill="#f3c66b"/><text x="40" y="28" fill="#dce8f2">多文件上传</text>
+      <rect x="146" width="120" height="45" rx="22.5" fill="#172a40" stroke="#31465c"/>
+      <circle cx="169" cy="22.5" r="6" fill="#5bd6c3"/><text x="186" y="28" fill="#dce8f2">本地检索</text>
+      <rect x="280" width="132" height="45" rx="22.5" fill="#172a40" stroke="#31465c"/>
+      <circle cx="303" cy="22.5" r="6" fill="#8aa3ff"/><text x="320" y="28" fill="#dce8f2">带版本读取</text>
+      <rect x="426" width="120" height="45" rx="22.5" fill="#172a40" stroke="#31465c"/>
+      <circle cx="449" cy="22.5" r="6" fill="#ff8f75"/><text x="466" y="28" fill="#dce8f2">原生视觉</text>
+    </g>
+  </g>
+
+  <g transform="translate(886 72)" filter="url(#shadow)">
+    <rect width="446" height="474" rx="30" fill="#0b1626" stroke="#30465d"/>
+    <g transform="translate(34 34)" font-family="Inter, &quot;PingFang SC&quot;, &quot;Hiragino Sans GB&quot;, &quot;Microsoft YaHei&quot;, &quot;Noto Sans CJK SC&quot;, &quot;Source Han Sans SC&quot;, ui-sans-serif, system-ui, sans-serif">
+      <text x="0" y="22" fill="#6f879b" font-size="14" font-weight="700" letter-spacing="1.4">本地证据流水线</text>
+      <g transform="translate(0 54)">
+        <rect width="106" height="78" rx="14" fill="#351d21" stroke="#8e4b45"/>
+        <text x="18" y="31" fill="#ff9b89" font-size="12" font-weight="700">PDF</text>
+        <text x="18" y="54" fill="#f5e8e5" font-size="14">汇报.pdf</text>
+        <rect x="118" width="106" height="78" rx="14" fill="#172a46" stroke="#3d6295"/>
+        <text x="136" y="31" fill="#8ab7ff" font-size="12" font-weight="700">DOCX</text>
+        <text x="136" y="54" fill="#e2edfb" font-size="14">纪要.docx</text>
+        <rect x="236" width="106" height="78" rx="14" fill="#173529" stroke="#39775d"/>
+        <text x="254" y="31" fill="#75d5a8" font-size="12" font-weight="700">XLSX</text>
+        <text x="254" y="54" fill="#e2f4eb" font-size="14">指标.xlsx</text>
+      </g>
+      <path d="M171 151v39" stroke="#5bd6c3" stroke-width="2.5" stroke-linecap="round"/>
+      <path d="m162 181 9 10 9-10" fill="none" stroke="#5bd6c3" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <g transform="translate(0 202)">
+        <rect width="342" height="82" rx="16" fill="#132638" stroke="#325068"/>
+        <rect x="18" y="17" width="54" height="24" rx="12" fill="#23445b"/>
+        <text x="30" y="34" fill="#9cc4da" font-size="12" font-weight="700">检索</text>
+        <text x="18" y="62" fill="#e4eef6" font-size="15">“流程效率”</text>
+        <text x="257" y="34" fill="#6f879b" font-size="12">FTS5 / JS</text>
+      </g>
+      <path d="M171 296v39" stroke="#f3c66b" stroke-width="2.5" stroke-linecap="round"/>
+      <path d="m162 326 9 10 9-10" fill="none" stroke="#f3c66b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <g transform="translate(0 347)">
+        <rect width="342" height="72" rx="16" fill="#251f18" stroke="#6c5732"/>
+        <text x="18" y="29" fill="#f4d897" font-size="12" font-weight="700">证据</text>
+        <text x="18" y="52" fill="#f7efe0" font-size="14">“人员”!B12:F18 · 版本 8f3…</text>
+      </g>
+    </g>
+  </g>
+</svg>

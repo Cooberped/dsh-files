@@ -23,15 +23,25 @@ third-party artwork, screenshot, user document, model output, credential,
 private path, personal data, or hidden metadata. System font-family names are
 CSS fallbacks only; no font software is bundled.
 
+The `*.zh.svg` files are Simplified-Chinese counterparts of the three English
+diagrams: identical geometry and palette, translated copy, label boxes
+recomputed for CJK glyph width, and a CJK font-family fallback list.
+
 当前素材均于 2026-08-28 以确定性 SVG 代码直接为本仓库创建。文件不嵌入外部图片、
 字体文件、Logo、第三方作品、截图、用户文档、模型输出、凭据、私有路径、个人信息或
 隐藏元数据；`font-family` 只是系统字体回退声明，并未打包字体软件。
+
+`*.zh.svg` 是三张英文图的简体中文版：几何与配色完全一致，文案为翻译版本，标签框
+宽度按中文字宽重算，并补充了 CJK font-family 回退列表。
 
 | Asset | SHA-256 | Purpose | License/status |
 | --- | --- | --- | --- |
 | `readme/hero.svg` | `40216c2aea8ec85aa8cbfd00d0621b69e60929f40c0037f48706bdb482f3e852` | Project identity and four-capability overview | Repository-original SVG; contributed under MIT; `CONFIRMED` |
 | `readme/architecture.svg` | `f78a71239c37320af50549449862eab312b130c9ccbc21395ff5f925f7f10595` | Composer → local ingest → private retrieval → model tools, plus native vision branch | Repository-original SVG; contributed under MIT; `CONFIRMED` |
 | `readme/evidence-loop.svg` | `4df0cd67ac480bf275ed3a07bc1a3a7d21575a01193e6b2f0dcbdcdfb95dedd5` | Inventory → retrieve → expand → answer workflow | Repository-original SVG; contributed under MIT; `CONFIRMED` |
+| `readme/hero.zh.svg` | `f20dbd395c0ddefa98d19db19b30e0d9304a4cbb9edf17b47852dd4918a917d6` | Simplified-Chinese hero for `README.zh.md` | Repository-original SVG; contributed under MIT; `CONFIRMED` |
+| `readme/architecture.zh.svg` | `8f6c6743b2a905650f50dc37d88cc305aeb50e4b4adaf03e433b68172cabb297` | Simplified-Chinese architecture diagram for `README.zh.md` | Repository-original SVG; contributed under MIT; `CONFIRMED` |
+| `readme/evidence-loop.zh.svg` | `6ce86dcf6156bec36829c412434492a4e1df0cd36849adaa97c32276707b8cc7` | Simplified-Chinese evidence-loop diagram for `README.zh.md` | Repository-original SVG; contributed under MIT; `CONFIRMED` |
 
 Confirmation / 确认：
 
