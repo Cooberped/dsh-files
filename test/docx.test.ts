@@ -62,9 +62,18 @@ test('DOCX projection rejects packages without the main document part', async ()
   await assert.rejects(parseDocx(bytes), /missing word\/document\.xml/)
 })
 
-test('DOCX projection caps the number of expanded XML parts', async () => {
+test('DOCX projection accepts more than 63 legitimate header parts', async () => {
   const optional: Record<string, string> = {}
   for (let index = 1; index <= 64; index += 1) {
+    optional[`word/header${index}.xml`] = wordPart(`<w:p><w:r><w:t>H${index}</w:t></w:r></w:p>`, 'hdr')
+  }
+  const bytes = await makeDocx('<w:p><w:r><w:t>Body</w:t></w:r></w:p>', optional)
+  assert.match(await parseDocx(bytes), /### Header 64\nH64/)
+})
+
+test('DOCX projection still caps pathological XML part counts', async () => {
+  const optional: Record<string, string> = {}
+  for (let index = 1; index <= 256; index += 1) {
     optional[`word/header${index}.xml`] = wordPart(`<w:p><w:r><w:t>H${index}</w:t></w:r></w:p>`, 'hdr')
   }
   const bytes = await makeDocx('<w:p><w:r><w:t>Body</w:t></w:r></w:p>', optional)

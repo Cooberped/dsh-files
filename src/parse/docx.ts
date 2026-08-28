@@ -9,7 +9,10 @@ import { Parser } from 'saxen'
 const WORD_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 const MAX_XML_PART_BYTES = 32 * 1024 * 1024
 const MAX_TOTAL_XML_BYTES = 64 * 1024 * 1024
-const MAX_XML_PARTS = 64
+// Large sectioned documents can legitimately contain more than 63 distinct
+// header/footer parts. Keep a separate structural cap, but let the byte caps
+// remain the primary ZIP-expansion defence.
+const MAX_XML_PARTS = 256
 
 const MAIN_PART = 'word/document.xml'
 const OPTIONAL_PART = /^word\/(?:footnotes|endnotes|header\d+|footer\d+)\.xml$/u
