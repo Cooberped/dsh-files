@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto'
 import type { DocumentFormat } from '../detect.ts'
 import { parseDocument } from '../parse/index.ts'
 import { splitPdfPages } from '../parse/pdf.ts'
+import { parseXlsxWorkbook, projectXlsx } from '../parse/xlsx.ts'
 
 /**
  * Bump whenever parser output or block/coordinate semantics change. Binding
@@ -407,14 +408,18 @@ async function xlsxBlocks(
   sheetIndexes: Map<string, number>,
   options: BlockBuildOptions
 ): Promise<void> {
-  const inventory = await parseDocument(bytes, 'xlsx', { sheetRowLimit: 1, listOnly: true })
+  // XLSX decompression and XML parsing are the dominant cost. Parse once,
+  // then project every worksheet from the same in-memory workbook instead of
+  // re-running read-excel-file N+1 times for N sheets.
+  const workbook = await parseXlsxWorkbook(bytes)
+  const inventory = projectXlsx(workbook, { sheetRowLimit: 1, listOnly: true })
   const sheets = parseWorkbookInventory(inventory)
   for (const sheet of sheets) sheetIndexes.set(sheet.name, sheet.index)
   sheets: for (const sheet of sheets) {
     checkAborted(options.signal)
     // Selecting one sheet asks the existing parser for all populated rows; no
     // parser implementation or default read_document path is changed here.
-    const projection = await parseDocument(bytes, 'xlsx', {
+    const projection = projectXlsx(workbook, {
       sheetRowLimit: Number.MAX_SAFE_INTEGER,
       maxSheets: sheets.length,
       sheet: sheet.index
