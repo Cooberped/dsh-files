@@ -84,11 +84,21 @@ If a commit is missing the trailer, amend or rebase it; do not add another
 person's sign-off. 贡献者无需签署 CLA，但每个 commit 都必须有本人 DCO sign-off，
 用以确认你有权按本项目许可证提交该贡献。
 
+The one-time public-repository bootstrap preserves the pre-policy development
+history through commit `ba6cead1b33a5bc53449918350be7618504076bf` without
+retroactive sign-off. Rewriting or signing another author's historical commits
+would weaken provenance. The DCO requirement applies to every contribution
+created after that legacy-import boundary. This exception is closed and must
+not be extended to later commits.
+
+首次公开仓库保留截至上述 commit 的治理前开发历史，不追补他人签名；该边界之后
+创建的所有贡献均须遵守 DCO，且不得扩大此一次性例外。
+
 ## Pull-request process / PR 流程
 
 1. Fork the repository and create a topic branch from current `main`.
 2. Make a focused change with tests and documentation where relevant.
-3. Confirm every commit has a DCO sign-off.
+3. Confirm every post-bootstrap commit has its author's DCO sign-off.
 4. Complete the pull-request template, including exact validation commands.
 5. Wait for required checks and a human maintainer review.
 6. Address review comments with new commits; avoid force-pushing while a review

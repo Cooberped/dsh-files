@@ -50,5 +50,6 @@ Manual or browser evidence, if applicable / 人工或浏览器证据（如适用
 - [ ] The change is focused and unrelated refactors are excluded.
 - [ ] Tests/documentation cover the changed contract.
 - [ ] Generated `lib/` output matches `src/` where applicable.
-- [ ] Every commit includes my DCO `Signed-off-by` trailer (`git commit -s`).
+- [ ] Every commit created after the documented bootstrap boundary includes its
+      author's DCO `Signed-off-by` trailer (`git commit -s`).
 - [ ] I have read `CONTRIBUTING.md` and `CODE_OF_CONDUCT.md`.

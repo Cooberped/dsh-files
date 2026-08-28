@@ -27,8 +27,12 @@ Before the first public release, configure and verify:
 
 - repository topics include `dsh-plugin`, `deepseek-harness`, `documents`, and
   relevant format tags so the plugin is discoverable;
-- `main` requires a pull request, at least one approving review, required status
-  checks, resolved conversations, and signed DCO commits;
+- `main` requires a pull request, required status checks, resolved
+  conversations, and signed DCO commits;
+- while the project has only one human maintainer, required approvals remain 0
+  so that the author is not forced to self-approve; after a second independent
+  maintainer is established, require at least one approval and Code Owner
+  review;
 - force pushes and branch deletion are blocked;
 - CODEOWNERS review is required for security, release, dependency, and core
   runtime changes;
@@ -49,7 +53,9 @@ All gates are fail-closed. Record the exact release commit SHA.
 - The release branch starts from current `main` and contains only reviewed
   changes.
 - Upstream `taxueseek/dsh-files` history and MIT copyright notice remain intact.
-- Every commit is DCO-signed; no CLA is required.
+- Every post-bootstrap commit is DCO-signed; no CLA is required. The preserved
+  legacy-import history through
+  `ba6cead1b33a5bc53449918350be7618504076bf` is the sole documented exception.
 - `git status --short` is empty for tracked and non-ignored untracked files.
 - No private documents, HR/customer data, credentials, absolute user paths,
   session stores, generated real-data indexes, or ad hoc local configuration
