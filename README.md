@@ -4,6 +4,12 @@
 
 </div>
 
+> [!IMPORTANT]
+> **This repository has moved to [Cooberped/dsh-evidence](https://github.com/Cooberped/dsh-evidence).**
+> Development continues there under the npm name `@cooberped/dsh-evidence`. This
+> copy is archived and will not receive updates. The full commit history,
+> including the upstream `taxueseek/dsh-files` lineage, came along unchanged.
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/readme/hero.svg" width="100%" alt="dsh-files turns local files into versioned evidence through upload, retrieval, coordinate reads, and native vision.">
 </p>

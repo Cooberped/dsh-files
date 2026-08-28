@@ -4,6 +4,11 @@
 
 </div>
 
+> [!IMPORTANT]
+> **本仓库已迁移至 [Cooberped/dsh-evidence](https://github.com/Cooberped/dsh-evidence)。**
+> 开发在新仓库继续，npm 包名为 `@cooberped/dsh-evidence`。此处已归档，不再更新。
+> 完整 commit 历史（含 `taxueseek/dsh-files` 上游传承）已原样带走。
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/readme/hero.zh.svg" width="100%" alt="dsh-files 将本地文件经过上传、检索和带版本坐标回读，转化为可追溯证据，并保留原生视觉链路。">
 </p>
