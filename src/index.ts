@@ -17,7 +17,7 @@ import { createWorkspaceFilesHandler, DEFAULT_IGNORED_DIRS, DEFAULT_IGNORED_EXTE
 import { ParseCache } from './cache.ts'
 import { parseHost } from './guard.ts'
 
-/** Cordis plugin name — must match the row id in cordis.patch.yml. */
+/** Cordis plugin name. The bundle row id in cordis.patch.yml is chosen separately (`files-toolkit`). */
 export const name = 'dsh-files'
 
 /** Services required by this plugin. */

@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="560" viewBox="0 0 1440 560" role="img" aria-labelledby="title desc">
+  <title id="title">dsh-files 模型证据循环</title>
+  <desc id="desc">推荐的模型行为：先盘点附件、再精确检索、按坐标与版本展开，最后只依据证据回答。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#f7f9fc"/><stop offset="1" stop-color="#edf3f7"/></linearGradient>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0l10 5-10 5z" fill="#8094a8"/></marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="11" flood-color="#16324a" flood-opacity=".12"/></filter>
+  </defs>
+  <rect width="1440" height="560" rx="32" fill="url(#bg)"/>
+  <text x="72" y="72" fill="#102235" font-family="Inter, &quot;PingFang SC&quot;, &quot;Hiragino Sans GB&quot;, &quot;Microsoft YaHei&quot;, &quot;Noto Sans CJK SC&quot;, &quot;Source Han Sans SC&quot;, ui-sans-serif, system-ui, sans-serif" font-size="34" font-weight="760">模型读得更少，每条结论都知道出处。</text>
+  <text x="72" y="108" fill="#61768a" font-family="Inter, &quot;PingFang SC&quot;, &quot;Hiragino Sans GB&quot;, &quot;Microsoft YaHei&quot;, &quot;Noto Sans CJK SC&quot;, &quot;Source Han Sans SC&quot;, ui-sans-serif, system-ui, sans-serif" font-size="17">一套紧凑的工具约定，取代反复的全文扫描。</text>
+  <g transform="translate(70 175)" font-family="Inter, &quot;PingFang SC&quot;, &quot;Hiragino Sans GB&quot;, &quot;Microsoft YaHei&quot;, &quot;Noto Sans CJK SC&quot;, &quot;Source Han Sans SC&quot;, ui-sans-serif, system-ui, sans-serif" filter="url(#shadow)">
+    <g>
+      <rect width="250" height="235" rx="22" fill="#ffffff" stroke="#d6e0e8"/>
+      <circle cx="32" cy="32" r="17" fill="#f3c66b"/><text x="27" y="38" fill="#182331" font-size="16" font-weight="800">1</text>
+      <text x="60" y="39" fill="#14283a" font-size="19" font-weight="700">盘点</text>
+      <text x="24" y="84" fill="#53697c" font-size="14">还没有具体问题？</text>
+      <rect x="24" y="105" width="202" height="52" rx="12" fill="#f3f6f9"/>
+      <text x="39" y="127" fill="#21384b" font-size="13" font-weight="700">search_documents</text>
+      <text x="39" y="146" fill="#6d8091" font-size="12">只传 file_paths</text>
+      <text x="24" y="193" fill="#697d8e" font-size="13">建立私有索引，</text>
+      <text x="24" y="213" fill="#697d8e" font-size="13">只返回紧凑清单。</text>
+    </g>
+    <g transform="translate(330)">
+      <rect width="250" height="235" rx="22" fill="#ffffff" stroke="#d6e0e8"/>
+      <circle cx="32" cy="32" r="17" fill="#5bd6c3"/><text x="27" y="38" fill="#17302c" font-size="16" font-weight="800">2</text>
+      <text x="60" y="39" fill="#14283a" font-size="19" font-weight="700">检索</text>
+      <text x="24" y="84" fill="#53697c" font-size="14">给一个短而准的查询。</text>
+      <rect x="24" y="105" width="202" height="52" rx="12" fill="#edf8f6"/>
+      <text x="39" y="127" fill="#20463f" font-size="13" font-weight="700">query：“Q3 留任”</text>
+      <text x="39" y="146" fill="#5f7b75" font-size="12">返回排序证据块</text>
+      <text x="24" y="193" fill="#697d8e" font-size="13">拿到文本、评分、格式、</text>
+      <text x="24" y="213" fill="#697d8e" font-size="13">坐标和版本。</text>
+    </g>
+    <g transform="translate(660)">
+      <rect width="250" height="235" rx="22" fill="#ffffff" stroke="#d6e0e8"/>
+      <circle cx="32" cy="32" r="17" fill="#8aa3ff"/><text x="27" y="38" fill="#1d2851" font-size="16" font-weight="800">3</text>
+      <text x="60" y="39" fill="#14283a" font-size="19" font-weight="700">展开</text>
+      <text x="24" y="84" fill="#53697c" font-size="14">需要上下文？</text>
+      <rect x="24" y="105" width="202" height="52" rx="12" fill="#f0f2ff"/>
+      <text x="39" y="127" fill="#2b3d79" font-size="13" font-weight="700">read_document</text>
+      <text x="39" y="146" fill="#6978a0" font-size="12">坐标 + 版本</text>
+      <text x="24" y="193" fill="#697d8e" font-size="13">只展开那一页、那张幻灯片、</text>
+      <text x="24" y="213" fill="#697d8e" font-size="13">那段行区间或 Sheet!Range。</text>
+    </g>
+    <g transform="translate(990)">
+      <rect width="250" height="235" rx="22" fill="#ffffff" stroke="#d6e0e8"/>
+      <circle cx="32" cy="32" r="17" fill="#ff8f75"/><text x="27" y="38" fill="#4d201a" font-size="16" font-weight="800">4</text>
+      <text x="60" y="39" fill="#14283a" font-size="19" font-weight="700">回答</text>
+      <text x="24" y="84" fill="#53697c" font-size="14">只用已引用的证据。</text>
+      <rect x="24" y="105" width="202" height="52" rx="12" fill="#fff2ef"/>
+      <text x="39" y="127" fill="#673129" font-size="13" font-weight="700">“人员”!B12:F18</text>
+      <text x="39" y="146" fill="#90655e" font-size="12">版本已校验</text>
+      <text x="24" y="193" fill="#697d8e" font-size="13">零召回就换词重试，</text>
+      <text x="24" y="213" fill="#697d8e" font-size="13">或直说材料里没有证据。</text>
+    </g>
+  </g>
+  <path d="M320 293h78" stroke="#8094a8" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M650 293h78" stroke="#8094a8" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M980 293h78" stroke="#8094a8" stroke-width="3" marker-end="url(#arrow)"/>
+</svg>
