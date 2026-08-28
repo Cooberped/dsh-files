@@ -368,6 +368,7 @@ test('search_documents rebuilds a same-content index created by an older retriev
   const tool = defineSearchDocumentsTool({
     fs: {
       resolve: async () => ({ targetKey: FsTargetKey(targetKey), displayPath: '/workspace/doc.txt' }),
+      contains: () => true,
       stat: async () => ({ version: FsVersion('fs-v1'), type: 'file', size: bytes.length }),
       readBytes: async () => bytes
     },
@@ -426,6 +427,7 @@ test('search_documents refreshes a same-version persistent descriptor before ret
   const tool = defineSearchDocumentsTool({
     fs: {
       resolve: async () => ({ targetKey: FsTargetKey(targetKey), displayPath: '/workspace/stale-path.txt' }),
+      contains: () => true,
       stat: async () => ({ version: FsVersion('fs-v1'), type: 'file', size: bytes.length }),
       readBytes: async () => {
         reads += 1
@@ -471,6 +473,101 @@ test('search_documents refreshes a same-version persistent descriptor before ret
   }
 })
 
+test('search_documents rejects an outside target even when its displayPath looks workspace-relative', async () => {
+  const root = { targetKey: FsTargetKey('target:workspace-root'), displayPath: '/workspace' }
+  const outside = { targetKey: FsTargetKey('target:outside-secret'), displayPath: 'secret.txt' }
+  const backend = new MemoryRetrievalBackend()
+  let containsCalls = 0
+  const tool = defineSearchDocumentsTool({
+    fs: {
+      resolve: async (path) => path === '.' ? root : outside,
+      contains: (parent, child) => {
+        containsCalls += 1
+        return parent.targetKey === root.targetKey && child.targetKey !== outside.targetKey
+      },
+      stat: async () => { throw new Error('stat must not run for an unauthorized target') },
+      readBytes: async () => { throw new Error('private bytes must not be read') }
+    },
+    emit: () => undefined
+  }, {
+    maxFileBytes: 1024,
+    maxFiles: 2,
+    maxResults: 4,
+    blockChars: 128,
+    maxBlocksPerDocument: 8,
+    documentTtlMs: 1000,
+    queryLogTtlMs: 1000,
+    timeoutMs: 1000
+  }, Promise.resolve({
+    backend,
+    report: { nodeVersion: process.versions.node, backend: 'js-memory', phraseProbe: false }
+  }))
+  const exec = {
+    signal: new AbortController().signal,
+    agent: { session: { header: { cwd: '/workspace' } } }
+  } as unknown as Parameters<typeof tool.execute>[1]
+  try {
+    await assert.rejects(
+      tool.execute({ file_paths: ['/Users/private-account/secret.txt'] }, exec),
+      (error: unknown) => {
+        assert.ok(error instanceof Error)
+        assert.match(error.message, /outside the active session workspace/)
+        assert.doesNotMatch(error.message, /secret\.txt|\/Users\/private-account/u)
+        return true
+      }
+    )
+    assert.equal(containsCalls, 1)
+  } finally {
+    backend.close()
+  }
+})
+
+test('search_documents projects contained relative and absolute display paths to reusable workspace paths', async () => {
+  const bytes = new TextEncoder().encode('contained evidence')
+  for (const displayPath of ['inside.txt', '/workspace/inside.txt']) {
+    const root = { targetKey: FsTargetKey(`target:root:${displayPath}`), displayPath: '/workspace' }
+    const target = { targetKey: FsTargetKey(`target:file:${displayPath}`), displayPath }
+    const backend = new MemoryRetrievalBackend()
+    const tool = defineSearchDocumentsTool({
+      fs: {
+        resolve: async (path) => path === '.' ? root : target,
+        contains: (parent, child) => parent.targetKey === root.targetKey && child.targetKey === target.targetKey,
+        stat: async () => ({ version: FsVersion('fs-v1'), type: 'file', size: bytes.length }),
+        readBytes: async () => bytes
+      },
+      emit: () => undefined
+    }, {
+      maxFileBytes: 1024,
+      maxFiles: 2,
+      maxResults: 4,
+      blockChars: 128,
+      maxBlocksPerDocument: 8,
+      documentTtlMs: 1000,
+      queryLogTtlMs: 1000,
+      timeoutMs: 1000
+    }, Promise.resolve({
+      backend,
+      report: { nodeVersion: process.versions.node, backend: 'js-memory', phraseProbe: false }
+    }))
+    const exec = {
+      signal: new AbortController().signal,
+      agent: { session: { header: { cwd: '/workspace' } } }
+    } as unknown as Parameters<typeof tool.execute>[1]
+    try {
+      const result = await tool.execute({ file_paths: ['/workspace/inside.txt'] }, exec) as {
+        documents: Array<{ path: string }>
+      }
+      assert.deepEqual(result.documents, [{
+        path: 'inside.txt',
+        format: 'text',
+        version: retrievalDocumentVersion(bytes)
+      }])
+    } finally {
+      backend.close()
+    }
+  }
+})
+
 test('search_documents caches a truncated document version and reports the persisted block limit', async () => {
   const bytes = new TextEncoder().encode(Array.from({ length: 12 }, (_, index) => `evidence-${index}`).join('\n'))
   let reads = 0
@@ -478,6 +575,7 @@ test('search_documents caches a truncated document version and reports the persi
   const tool = defineSearchDocumentsTool({
     fs: {
       resolve: async () => ({ targetKey: FsTargetKey('target:large.txt'), displayPath: '/workspace/large.txt' }),
+      contains: () => true,
       stat: async () => ({ version: FsVersion('fs-v1'), type: 'file', size: bytes.length }),
       readBytes: async () => {
         reads += 1
@@ -566,6 +664,7 @@ test('search_documents index mode returns a compact inventory before query retri
           const file = path.startsWith('/workspace/') ? path.slice('/workspace/'.length) : path
           return { targetKey: FsTargetKey(`target:${file}`), displayPath: `/workspace/${file}` }
         },
+        contains: () => true,
         stat: async (target) => {
           const file = target.displayPath.slice('/workspace/'.length)
           const bytes = files.get(file)
@@ -696,6 +795,7 @@ test('persistent SQLite failure keeps backendNotice actionable without exposing 
   const tool = defineSearchDocumentsTool({
     fs: {
       resolve: async () => ({ targetKey: FsTargetKey('target:fallback.txt'), displayPath: '/workspace/fallback.txt' }),
+      contains: () => true,
       stat: async () => ({ version: FsVersion('fs-v1'), type: 'file', size: bytes.length }),
       readBytes: async () => bytes
     },

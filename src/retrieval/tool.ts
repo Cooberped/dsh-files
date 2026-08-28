@@ -33,6 +33,7 @@ export interface SearchDocumentsConfig {
 interface SearchDocumentsContext {
   fs: {
     resolve(path: string, opts?: { cwd?: string; signal?: AbortSignal }): Promise<FsTarget>
+    contains(parent: FsTarget, child: FsTarget): boolean
     stat(target: FsTarget, signal?: AbortSignal): Promise<{ version: FsVersion; type: string; size?: number } | undefined>
     readBytes(target: FsTarget, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array>
   }
@@ -119,11 +120,15 @@ async function readSource(
   ctx: SearchDocumentsContext,
   path: string,
   cwd: string | undefined,
+  workspaceRoot: FsTarget | undefined,
   config: SearchDocumentsConfig,
   exec: { signal: AbortSignal },
   sourceCache: Map<string, CachedSource>
 ): Promise<ReadSource> {
   const target = await ctx.fs.resolve(path, { ...(cwd !== undefined ? { cwd } : {}), signal: exec.signal })
+  if (workspaceRoot !== undefined && !ctx.fs.contains(workspaceRoot, target)) {
+    throw new Error('document target is outside the active session workspace')
+  }
   const modelPath = projectModelPath(path, target.displayPath, cwd)
   const info = await ctx.fs.stat(target, exec.signal)
   if (info === undefined) {
@@ -423,6 +428,9 @@ export function defineSearchDocumentsTool(
     async execute(args, exec) {
       const input = parseArgs(args, config)
       const cwd = sessionCwd(exec)
+      const workspaceRoot = cwd === undefined
+        ? undefined
+        : await ctx.fs.resolve('.', { cwd, signal: exec.signal })
       const { backend, report } = await createdBackend
       const backendNotice = report.backend === 'js-memory'
         ? `Non-persistent JS fallback active${report.fallbackReason === undefined ? '' : `: ${report.fallbackReason}`}`
@@ -430,7 +438,7 @@ export function defineSearchDocumentsTool(
       const sources: ReadSource[] = []
       let indexedDocuments = 0
       for (const path of input.filePaths) {
-        const source = await readSource(ctx, path, cwd, config, exec, sourceCache)
+        const source = await readSource(ctx, path, cwd, workspaceRoot, config, exec, sourceCache)
         sources.push(source)
         while (backend.documentVersion(source.descriptor.id) !== source.descriptor.version) {
           const pending = indexing.get(source.descriptor.id)

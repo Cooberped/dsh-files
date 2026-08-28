@@ -115,6 +115,9 @@ function parseArgs(args: Record<string, unknown>, config: ReadDocumentConfig): P
   }
   const version = typeof args.version === 'string' && args.version.trim() !== '' ? args.version.trim() : undefined
   if (args.version !== undefined && version === undefined) throw new Error('version must be a non-empty string when provided')
+  if (coordinate !== undefined && version === undefined) {
+    throw new Error('version is required when coordinate is provided; pass coordinate and version from the same search_documents result')
+  }
   return {
     filePath,
     offset,
@@ -292,6 +295,7 @@ function renderContent(path: string, format: string, value: {
 export function defineReadDocumentTool(ctx: {
   fs: {
     resolve(path: string, opts?: { cwd?: string; signal?: AbortSignal }): Promise<FsTarget>
+    contains(parent: FsTarget, child: FsTarget): boolean
     stat(target: FsTarget, signal?: AbortSignal): Promise<{ version: FsVersion; type: string; size?: number } | undefined>
     readBytes(target: FsTarget, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array>
   }
@@ -314,11 +318,11 @@ export function defineReadDocumentTool(ctx: {
       },
       coordinate: {
         type: 'string',
-        description: 'Exact page/slide/line/Sheet!Range coordinate returned by search_documents. May be combined with offset only for a whole page:N or slide:N coordinate.'
+        description: 'Exact page/slide/line/Sheet!Range coordinate returned by search_documents. Requires the version from the same result. May be combined with offset only for a whole page:N or slide:N coordinate.'
       },
       version: {
         type: 'string',
-        description: 'Exact retrieval version returned with the coordinate. If the file or projection schema changed, the call fails and must be re-searched.'
+        description: 'Exact retrieval version returned with the coordinate; required whenever coordinate is provided. If the file or projection schema changed, the call fails and must be re-searched.'
       },
       offset: {
         type: 'integer',
@@ -394,10 +398,16 @@ export function defineReadDocumentTool(ctx: {
     async execute(args, exec) {
       const input = parseArgs(args, config)
       const cwd = sessionCwd(exec)
+      const workspaceRoot = cwd === undefined
+        ? undefined
+        : await ctx.fs.resolve('.', { cwd, signal: exec.signal })
       const target = await ctx.fs.resolve(input.filePath, {
         ...(cwd !== undefined ? { cwd } : {}),
         signal: exec.signal
       })
+      if (workspaceRoot !== undefined && !ctx.fs.contains(workspaceRoot, target)) {
+        throw new Error('document target is outside the active session workspace')
+      }
       const modelPath = projectModelPath(input.filePath, target.displayPath, cwd)
       const info = await ctx.fs.stat(target, exec.signal)
       if (info === undefined) {

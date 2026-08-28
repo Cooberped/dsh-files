@@ -14,11 +14,28 @@ import {
   type DocumentDescriptor
 } from '../src/retrieval/blocks.ts'
 
-function testTool(bytes: Uint8Array, displayPath: string) {
+function testTool(bytes: Uint8Array, displayPath: string, options: {
+  contained?: boolean
+  onContains?: () => void
+  onStat?: () => void
+  onRead?: () => void
+} = {}) {
+  const root = { targetKey: FsTargetKey('target:workspace-root'), displayPath: '/workspace' }
+  const target = { targetKey: FsTargetKey(`target:${displayPath}`), displayPath }
   const fs = {
-    resolve: async () => ({ targetKey: FsTargetKey(`target:${displayPath}`), displayPath }),
-    stat: async () => ({ version: FsVersion('fs-v1'), type: 'file', size: bytes.length }),
-    readBytes: async () => bytes
+    resolve: async (path: string) => path === '.' ? root : target,
+    contains: (parent: typeof root, child: typeof target) => {
+      options.onContains?.()
+      return parent.targetKey === root.targetKey && child.targetKey === target.targetKey && options.contained !== false
+    },
+    stat: async () => {
+      options.onStat?.()
+      return { version: FsVersion('fs-v1'), type: 'file', size: bytes.length }
+    },
+    readBytes: async () => {
+      options.onRead?.()
+      return bytes
+    }
   }
   return defineReadDocumentTool(
     { fs, emit: () => undefined },
@@ -162,19 +179,55 @@ test('read_document rejects a stale search version before coordinate expansion',
   )
 })
 
-test('read_document rejects a resolved target outside cwd without exposing the host path', async () => {
+test('read_document requires the matching retrieval version for every coordinate', async () => {
+  const bytes = await coordinatePdf()
+  await assert.rejects(
+    testExec(testTool(bytes, '/workspace/sample.pdf'), {
+      file_path: 'sample.pdf',
+      coordinate: 'page:2'
+    }),
+    /version is required when coordinate is provided/
+  )
+})
+
+test('read_document trusts fs containment, not a relative displayPath, for an outside target', async () => {
   const bytes = new TextEncoder().encode('private')
+  let containsCalls = 0
+  let statCalls = 0
+  let readCalls = 0
   let error: unknown
   try {
-    await testExec(testTool(bytes, '/Users/private-account/secret.txt'), {
+    await testExec(testTool(bytes, 'secret.txt', {
+      contained: false,
+      onContains: () => { containsCalls += 1 },
+      onStat: () => { statCalls += 1 },
+      onRead: () => { readCalls += 1 }
+    }), {
       file_path: '/Users/private-account/secret.txt'
     })
   } catch (caught) {
     error = caught
   }
   assert.ok(error instanceof Error)
+  assert.equal(containsCalls, 1)
+  assert.equal(statCalls, 0)
+  assert.equal(readCalls, 0)
   assert.match(error.message, /outside the active session workspace/)
   assert.doesNotMatch(error.message, /\/Users\/private-account/u)
+})
+
+test('read_document fails closed when a contained remote target has no reusable workspace path', async () => {
+  const remote = 'remote://private-host/tenant/document.txt'
+  const bytes = new TextEncoder().encode('private')
+  let error: unknown
+  try {
+    await testExec(testTool(bytes, remote), { file_path: remote })
+  } catch (caught) {
+    error = caught
+  }
+  assert.ok(error instanceof Error)
+  assert.match(error.message, /cannot be represented as a reusable workspace-relative path/)
+  assert.doesNotMatch(error.message, /private-host|tenant|document\.txt/u)
 })
 
 test('read_document expands a long-line tail block by Unicode code-point range', async () => {
@@ -190,7 +243,7 @@ test('read_document expands a long-line tail block by Unicode code-point range',
   const tail = blocks.find((block) => block.text.includes('TARGET-TAIL'))
   assert.ok(tail)
   assert.equal(tail.coordinate, 'line:1,chars:33-43')
-  const result = await testExec(testTool(bytes, '/workspace/tail.txt'), {
+  const result = await testExec(testTool(bytes, 'tail.txt'), {
     file_path: 'tail.txt',
     coordinate: tail.coordinate,
     version: descriptor.version
@@ -242,6 +295,7 @@ test('read_document reads files larger than 64 KiB (head sniff no longer caps th
   const readCaps: number[] = []
   const fs = {
     resolve: async () => ({ targetKey: FsTargetKey('k-big'), displayPath: '/workspace/big.txt' }),
+    contains: () => true,
     stat: async () => ({ version: FsVersion('v1'), type: 'file', size: SIZE }),
     readBytes: async (_target: unknown, _signal: unknown, maxBytes: number) => {
       readCaps.push(maxBytes)
@@ -277,6 +331,7 @@ test('read_document still rejects files over maxFileBytes with FS_TOO_LARGE', as
   const maxFileBytes = 1024
   const fs = {
     resolve: async () => ({ targetKey: FsTargetKey('k-over'), displayPath: '/workspace/over.bin' }),
+    contains: () => true,
     stat: async () => ({ version: FsVersion('v1'), type: 'file', size: 2048 }),
     readBytes: async () => {
       throw new Error('must not be reached')
