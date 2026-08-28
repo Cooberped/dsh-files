@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.0-local.11（独立审计修正候选，未发布）
+
+`0.6.0-local.10` 未安装、未发布，并因独立安全审计发现以下问题而被拒绝。本候选在保留其加固项的基础上修正：
+
+### 修复
+
+- XLSX 预检不再跳过标记为 `TargetMode="External"` 的 worksheet relationship。当前解码依赖仍会按其 `Target` 读取包内成员，因此预检严格镜像实际消费路径，异常稀疏坐标不能借该标记绕过逻辑网格上限。
+- SQLite 持久索引启动失败时，模型侧 `backendNotice` / `fallbackReason` 只返回稳定错误类别，不再携带索引绝对路径；原始诊断只写入本机内部 logger。
+- `read_document` 与 `search_documents` 使用 Harness `FileSystem.contains(parent, child)` 作为工作区 containment 的权威判定，不再信任可为绝对路径、相对路径或 URI 的 `displayPath`。模型侧路径仅从调用方请求投影为可复用的工作区相对路径；无法安全表示时 fail-closed。
+- 坐标展开现在强制携带非空检索 `version`，并在任何文件系统读取前校验；旧坐标不能在内容变化后静默读取新文件。
+
+### 明确边界
+
+- 当 Harness 未提供 session cwd 时，只接受可安全复用的相对请求路径；正常 Web 会话会提供 cwd 并走 `FileSystem.contains` 权威检查。
+- 本候选继续仅供本机自用稳定性验证；未发布 npm、未推送远端。
+
 ## 0.6.0-local.10（安全与可逆坐标收口，未发布）
 
 ### 修复
