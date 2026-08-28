@@ -3,7 +3,8 @@
 // and TTL sweeping.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readdir, stat, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { mkdir, mkdtemp, readFile, readdir, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -146,6 +147,101 @@ test('upload preserves sub-directories from x-file-relative-path, rejecting trav
       assert.ok(etcFiles[0].startsWith('..') === false)
       const subFiles2 = await readdir(join(sessionDir, '.dsh-filess', 'session-b', 'sub', 'dir'))
       assert.equal(subFiles2.length, 1)
+    }
+  )
+})
+
+test('POST rejects a symlinked upload subdirectory instead of writing outside the session root', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-files-symlink-post-'))
+  const outside = await mkdtemp(join(tmpdir(), 'dsh-files-symlink-outside-'))
+  const storageRoot = join(workspace, '.dsh-filess', 'symlink-post')
+  await mkdir(storageRoot, { recursive: true })
+  await symlink(outside, join(storageRoot, 'nested'))
+  await withServer(
+    {
+      maxBytes: 1024 * 1024,
+      allowedExtensions: [],
+      ttlMs: 60_000,
+      sweepIntervalMs: 0,
+      maxConcurrent: 4,
+      maxSessionBytes: 0,
+      defaultDir: workspace,
+      sessionCwd: (id) => (id === 'symlink-post' ? workspace : undefined)
+    },
+    async (base) => {
+      const response = await fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: {
+          'x-file-name': encodeURIComponent('escape.txt'),
+          'x-file-relative-path': encodeURIComponent('nested/escape.txt'),
+          'x-session-id': 'symlink-post'
+        },
+        body: 'must stay inside'
+      })
+      assert.equal(response.status, 403)
+      assert.deepEqual(await readdir(outside), [])
+    }
+  )
+})
+
+test('POST rejects symlinks at the upload base and session storage root', async (t) => {
+  await t.test('upload base', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'dsh-files-symlink-base-'))
+    const outside = await mkdtemp(join(tmpdir(), 'dsh-files-symlink-base-outside-'))
+    await symlink(outside, join(workspace, '.dsh-filess'))
+    await withServer(
+      { maxBytes: 1024 * 1024, allowedExtensions: [], ttlMs: 60_000, sweepIntervalMs: 0, maxConcurrent: 4, maxSessionBytes: 0, defaultDir: workspace, sessionCwd: (id) => (id === 'base-link' ? workspace : undefined) },
+      async (base) => {
+        const response = await fetch(`${base}/api/upload`, {
+          method: 'POST',
+          headers: { 'x-file-name': encodeURIComponent('escape.txt'), 'x-session-id': 'base-link' },
+          body: 'must stay inside'
+        })
+        assert.equal(response.status, 403)
+        assert.deepEqual(await readdir(outside), [])
+      }
+    )
+  })
+
+  await t.test('session root', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'dsh-files-symlink-root-'))
+    const outside = await mkdtemp(join(tmpdir(), 'dsh-files-symlink-root-outside-'))
+    await mkdir(join(workspace, '.dsh-filess'), { recursive: true })
+    await symlink(outside, join(workspace, '.dsh-filess', 'root-link'))
+    await withServer(
+      { maxBytes: 1024 * 1024, allowedExtensions: [], ttlMs: 60_000, sweepIntervalMs: 0, maxConcurrent: 4, maxSessionBytes: 0, defaultDir: workspace, sessionCwd: (id) => (id === 'root-link' ? workspace : undefined) },
+      async (base) => {
+        const response = await fetch(`${base}/api/upload`, {
+          method: 'POST',
+          headers: { 'x-file-name': encodeURIComponent('escape.txt'), 'x-session-id': 'root-link' },
+          body: 'must stay inside'
+        })
+        assert.equal(response.status, 403)
+        assert.deepEqual(await readdir(outside), [])
+      }
+    )
+  })
+})
+
+test('POST rejects a digest-shaped final symlink instead of treating it as deduplicated content', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-files-symlink-final-'))
+  const outside = join(await mkdtemp(join(tmpdir(), 'dsh-files-symlink-final-outside-')), 'secret.txt')
+  const storageRoot = join(workspace, '.dsh-filess', 'final-link')
+  const body = 'same digest bytes'
+  const digest = createHash('sha256').update(body).digest('hex').slice(0, 16)
+  await mkdir(storageRoot, { recursive: true })
+  await writeFile(outside, 'outside secret')
+  await symlink(outside, join(storageRoot, `${digest}-escape.txt`))
+  await withServer(
+    { maxBytes: 1024 * 1024, allowedExtensions: [], ttlMs: 60_000, sweepIntervalMs: 0, maxConcurrent: 4, maxSessionBytes: 0, defaultDir: workspace, sessionCwd: (id) => (id === 'final-link' ? workspace : undefined) },
+    async (base) => {
+      const response = await fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: { 'x-file-name': encodeURIComponent('escape.txt'), 'x-session-id': 'final-link' },
+        body
+      })
+      assert.equal(response.status, 403)
+      assert.equal(await readFile(outside, 'utf8'), 'outside secret')
     }
   )
 })
@@ -428,6 +524,27 @@ test('DELETE cannot cross session upload directories even when sessions share on
   )
 })
 
+test('DELETE rejects an intermediate symlink and preserves the outside file', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-files-symlink-delete-'))
+  const outside = await mkdtemp(join(tmpdir(), 'dsh-files-symlink-delete-outside-'))
+  const storageRoot = join(workspace, '.dsh-filess', 'symlink-delete')
+  await mkdir(storageRoot, { recursive: true })
+  await writeFile(join(outside, 'victim.txt'), 'outside secret')
+  await symlink(outside, join(storageRoot, 'nested'))
+  await withServer(
+    { maxBytes: 1024 * 1024, allowedExtensions: [], ttlMs: 60_000, sweepIntervalMs: 0, maxConcurrent: 4, defaultDir: workspace, sessionCwd: (id) => (id === 'symlink-delete' ? workspace : undefined) },
+    async (base) => {
+      const projected = '.dsh-filess/symlink-delete/nested/victim.txt'
+      const response = await fetch(`${base}/api/upload?path=${encodeURIComponent(projected)}`, {
+        method: 'DELETE',
+        headers: { 'x-session-id': 'symlink-delete' }
+      })
+      assert.equal(response.status, 403)
+      assert.equal(await readFile(join(outside, 'victim.txt'), 'utf8'), 'outside secret')
+    }
+  )
+})
+
 test('folder upload rejects paths deeper than the bounded directory limit', async () => {
   const sessionDir = await mkdtemp(join(tmpdir(), 'dsh-files-depth-'))
   const sessions = new Map([['depth', sessionDir]])
@@ -487,6 +604,17 @@ test('sweep recursively removes expired folder uploads without following sibling
   assert.equal(result.removedFiles, 1)
   assert.ok(result.removedDirs >= 3)
   await assert.rejects(stat(join(root, '.dsh-filess', 's1')))
+})
+
+test('sweep fails closed when the upload base itself is a symlink', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-files-sweep-link-'))
+  const outside = await mkdtemp(join(tmpdir(), 'dsh-files-sweep-link-outside-'))
+  const victim = join(outside, 'victim.txt')
+  await writeFile(victim, 'outside secret')
+  await symlink(outside, join(root, '.dsh-filess'))
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  await assert.rejects(sweep(root, 10, () => Date.now()), /unsafe upload path/)
+  assert.equal(await readFile(victim, 'utf8'), 'outside secret')
 })
 
 test('createSweeper with zero interval does nothing and returns a disposer', () => {
@@ -576,6 +704,27 @@ test('session quota rejects oversize totals with 507', async () => {
       assert.equal(over.status, 507)
       const files = await readdir(join(sessionDir, '.dsh-filess', 'q1'))
       assert.equal(files.length, 1)
+    }
+  )
+})
+
+test('session quota fails closed when the upload tree contains a symlink', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-files-symlink-quota-'))
+  const outside = await mkdtemp(join(tmpdir(), 'dsh-files-symlink-quota-outside-'))
+  const storageRoot = join(workspace, '.dsh-filess', 'symlink-quota')
+  await mkdir(storageRoot, { recursive: true })
+  await writeFile(join(outside, 'hidden.txt'), 'not counted by the vulnerable scan')
+  await symlink(outside, join(storageRoot, 'linked'))
+  await withServer(
+    { maxBytes: 1024 * 1024, allowedExtensions: [], ttlMs: 60_000, sweepIntervalMs: 0, maxConcurrent: 4, maxSessionBytes: 1024, defaultDir: workspace, sessionCwd: (id) => (id === 'symlink-quota' ? workspace : undefined) },
+    async (base) => {
+      const response = await fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: { 'x-file-name': encodeURIComponent('new.txt'), 'x-session-id': 'symlink-quota' },
+        body: 'new data'
+      })
+      assert.equal(response.status, 403)
+      assert.deepEqual(await readdir(storageRoot), ['linked'])
     }
   )
 })
