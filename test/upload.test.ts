@@ -31,6 +31,22 @@ test('sanitizeFileName strips control chars, separators, dot segments and leadin
   assert.equal(sanitizeFileName('x'.repeat(200) + '.pdf').length <= 120, true)
 })
 
+test('sanitizeFileName keeps the byte budget when the trailing segment is not an extension', () => {
+  // The extension is subtracted from the budget, so an unbounded trailing
+  // segment must not be treated as one: it would leave an empty stem, emit the
+  // oversized tail verbatim and make open() fail with ENAMETOOLONG (HTTP 500).
+  const hostile = 'a.' + 'x'.repeat(300)
+  assert.equal(Buffer.byteLength(sanitizeFileName(hostile)) <= 120, true)
+  assert.equal(Buffer.byteLength(sanitizeFileName('report.' + '中'.repeat(200))) <= 120, true)
+  // A real extension is still preserved, including multi-part and uppercase forms.
+  assert.equal(sanitizeFileName('notes.txt'), 'notes.txt')
+  assert.equal(sanitizeFileName('backup.tar.gz'), 'backup.tar.gz')
+  assert.equal(sanitizeFileName('photo.JPEG'), 'photo.JPEG')
+  assert.equal(sanitizeFileName('x'.repeat(200) + '.markdown').endsWith('.markdown'), true)
+  // A dotted name whose tail is not extension-shaped stays intact when short.
+  assert.equal(sanitizeFileName('report.final version pdf'), 'report.final version pdf')
+})
+
 test('sanitizeFileName stores Finder NFD names as NFC', () => {
   const nfc = '流程绩效-Café.pdf'
   const nfd = nfc.normalize('NFD')
@@ -96,6 +112,37 @@ test('upload stores files per session under the session cwd', async () => {
       assert.equal(payload.path.startsWith('/'), false)
       const files = await readdir(join(sessionDir, '.dsh-filess', 'session-a'))
       assert.equal(files.length, 1)
+    }
+  )
+})
+
+test('a hostile file name with an oversized trailing segment still persists', async () => {
+  const sessionDir = await mkdtemp(join(tmpdir(), 'dsh-files-session-'))
+  const sessions = new Map([['session-long', sessionDir]])
+  await withServer(
+    {
+      maxBytes: 1024 * 1024,
+      allowedExtensions: [],
+      ttlMs: 60_000,
+      sweepIntervalMs: 0,
+      maxConcurrent: 4,
+      defaultDir: await mkdtemp(join(tmpdir(), 'dsh-files-fallback-')),
+      sessionCwd: (id) => sessions.get(id)
+    },
+    async (base) => {
+      const res = await fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: {
+          'x-file-name': encodeURIComponent(`a.${'x'.repeat(300)}`),
+          'x-session-id': 'session-long'
+        },
+        body: 'hello'
+      })
+      // Before the extension shape was bounded this reached open() with a
+      // 300-byte final component and returned 500 "write failed".
+      assert.equal(res.status, 200)
+      const [stored] = await readdir(join(sessionDir, '.dsh-filess', 'session-long'))
+      assert.equal(Buffer.byteLength(stored) <= 255, true)
     }
   )
 })
