@@ -37,8 +37,10 @@ jobs:
 
           missing=0
           while IFS= read -r commit; do
-            if ! git show -s --format=%B "$commit" | grep -Eq '^Signed-off-by: .+ <[^<>]+>$'; then
-              echo "::error::Commit $commit is missing its author Signed-off-by trailer"
+            author="$(git show -s --format='%an <%ae>' "$commit")"
+            if ! git show -s --format='%(trailers:key=Signed-off-by,valueonly)' "$commit" \
+              | grep -Fqx -- "$author"; then
+              echo "::error::Commit $commit is not signed off by its author: $author"
               missing=1
             fi
           done < <(git rev-list --reverse "$start..HEAD")
