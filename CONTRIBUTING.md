@@ -50,6 +50,14 @@ Generated `lib/` files are tracked. If you change `src/`, run `pnpm build` and
 include the matching generated output in the same pull request. Do not hand-edit
 generated files.
 
+`README.md` and `README.zh.md` are a translated pair. When you edit one side,
+bring the other along in the same pull request and re-record both blob hashes in
+[`.github/readme-i18n.yaml`](.github/readme-i18n.yaml) with `git hash-object`.
+
+`README.md` 与 `README.zh.md` 是翻译对照关系。改动任意一侧时，请在同一个 pull
+request 中同步另一侧，并用 `git hash-object` 重新记录
+[`.github/readme-i18n.yaml`](.github/readme-i18n.yaml) 中的两个 blob 哈希。
+
 ## Scope and design expectations / 范围与设计要求
 
 - Keep pull requests narrow and explain any user-visible behavior change.
