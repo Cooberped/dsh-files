@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1440" height="560" viewBox="0 0 1440 560" role="img" aria-labelledby="title desc">
   <title id="title">dsh-files 模型证据循环</title>
-  <desc id="desc">推荐的模型行为：先盘点附件、再窄查检索、按坐标与版本精确展开，最后只依据证据回答。</desc>
+  <desc id="desc">推荐的模型行为：先盘点附件、再精确检索、按坐标与版本展开，最后只依据证据回答。</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#f7f9fc"/><stop offset="1" stop-color="#edf3f7"/></linearGradient>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0l10 5-10 5z" fill="#8094a8"/></marker>
@@ -8,7 +8,7 @@
   </defs>
   <rect width="1440" height="560" rx="32" fill="url(#bg)"/>
   <text x="72" y="72" fill="#102235" font-family="Inter, &quot;PingFang SC&quot;, &quot;Hiragino Sans GB&quot;, &quot;Microsoft YaHei&quot;, &quot;Noto Sans CJK SC&quot;, &quot;Source Han Sans SC&quot;, ui-sans-serif, system-ui, sans-serif" font-size="34" font-weight="760">模型读得更少，每条结论都知道出处。</text>
-  <text x="72" y="108" fill="#61768a" font-family="Inter, &quot;PingFang SC&quot;, &quot;Hiragino Sans GB&quot;, &quot;Microsoft YaHei&quot;, &quot;Noto Sans CJK SC&quot;, &quot;Source Han Sans SC&quot;, ui-sans-serif, system-ui, sans-serif" font-size="17">一份紧凑的工具合同，取代反复的全文扫描。</text>
+  <text x="72" y="108" fill="#61768a" font-family="Inter, &quot;PingFang SC&quot;, &quot;Hiragino Sans GB&quot;, &quot;Microsoft YaHei&quot;, &quot;Noto Sans CJK SC&quot;, &quot;Source Han Sans SC&quot;, ui-sans-serif, system-ui, sans-serif" font-size="17">一套紧凑的工具约定，取代反复的全文扫描。</text>
   <g transform="translate(70 175)" font-family="Inter, &quot;PingFang SC&quot;, &quot;Hiragino Sans GB&quot;, &quot;Microsoft YaHei&quot;, &quot;Noto Sans CJK SC&quot;, &quot;Source Han Sans SC&quot;, ui-sans-serif, system-ui, sans-serif" filter="url(#shadow)">
     <g>
       <rect width="250" height="235" rx="22" fill="#ffffff" stroke="#d6e0e8"/>
@@ -40,7 +40,7 @@
       <rect x="24" y="105" width="202" height="52" rx="12" fill="#f0f2ff"/>
       <text x="39" y="127" fill="#2b3d79" font-size="13" font-weight="700">read_document</text>
       <text x="39" y="146" fill="#6978a0" font-size="12">坐标 + 版本</text>
-      <text x="24" y="193" fill="#697d8e" font-size="13">只展开那一页、那一张、</text>
+      <text x="24" y="193" fill="#697d8e" font-size="13">只展开那一页、那张幻灯片、</text>
       <text x="24" y="213" fill="#697d8e" font-size="13">那段行区间或 Sheet!Range。</text>
     </g>
     <g transform="translate(990)">

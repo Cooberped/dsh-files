@@ -39,9 +39,9 @@ recomputed for CJK glyph width, and a CJK font-family fallback list.
 | `readme/hero.svg` | `40216c2aea8ec85aa8cbfd00d0621b69e60929f40c0037f48706bdb482f3e852` | Project identity and four-capability overview | Repository-original SVG; contributed under MIT; `CONFIRMED` |
 | `readme/architecture.svg` | `f78a71239c37320af50549449862eab312b130c9ccbc21395ff5f925f7f10595` | Composer → local ingest → private retrieval → model tools, plus native vision branch | Repository-original SVG; contributed under MIT; `CONFIRMED` |
 | `readme/evidence-loop.svg` | `4df0cd67ac480bf275ed3a07bc1a3a7d21575a01193e6b2f0dcbdcdfb95dedd5` | Inventory → retrieve → expand → answer workflow | Repository-original SVG; contributed under MIT; `CONFIRMED` |
-| `readme/hero.zh.svg` | `f20dbd395c0ddefa98d19db19b30e0d9304a4cbb9edf17b47852dd4918a917d6` | Simplified-Chinese hero for `README.zh.md` | Repository-original SVG; contributed under MIT; `CONFIRMED` |
-| `readme/architecture.zh.svg` | `8f6c6743b2a905650f50dc37d88cc305aeb50e4b4adaf03e433b68172cabb297` | Simplified-Chinese architecture diagram for `README.zh.md` | Repository-original SVG; contributed under MIT; `CONFIRMED` |
-| `readme/evidence-loop.zh.svg` | `6ce86dcf6156bec36829c412434492a4e1df0cd36849adaa97c32276707b8cc7` | Simplified-Chinese evidence-loop diagram for `README.zh.md` | Repository-original SVG; contributed under MIT; `CONFIRMED` |
+| `readme/hero.zh.svg` | `65979efc25efc47b3433326140b8f8d7d96dd93aefa46eb27fa333c1fcf33f45` | Simplified-Chinese hero for `README.zh.md` | Repository-original SVG; contributed under MIT; `CONFIRMED` |
+| `readme/architecture.zh.svg` | `7d60d91b1ee1c080d505514cd8f9a440b1ad5b526b725308196a2b7e44f9dea8` | Simplified-Chinese architecture diagram for `README.zh.md` | Repository-original SVG; contributed under MIT; `CONFIRMED` |
+| `readme/evidence-loop.zh.svg` | `cbcdfd4b4d6e5850016f226554dea38b03fa7c81a9ed34ba2e00abc6191f3343` | Simplified-Chinese evidence-loop diagram for `README.zh.md` | Repository-original SVG; contributed under MIT; `CONFIRMED` |
 
 Confirmation / 确认：
 
