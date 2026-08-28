@@ -306,11 +306,13 @@ function worksheetPartNames(bytes: Uint8Array): Set<string> {
       const attributes = getAttributes()
       const type = decodedAttribute(attributes, decodeEntities, 'Type')
       if (type !== WORKSHEET_REL_TRANSITIONAL && type !== WORKSHEET_REL_STRICT) return
-      if (decodedAttribute(attributes, decodeEntities, 'TargetMode') === 'External') return
       const target = decodedAttribute(attributes, decodeEntities, 'Target')
       if (target === undefined || target === '') {
         throw new Error('worksheet relationship has no Target')
       }
+      // read-excel-file resolves worksheet relationships without consulting
+      // TargetMode. Inspect any matching ZIP member under that same contract,
+      // including one labelled External, before allowing it to be materialized.
       // Match read-excel-file's supported relationship resolution, including
       // custom paths and the absolute /xl/... form seen in real workbooks.
       output.add(target.startsWith('/') ? target.slice(1) : `xl/${target}`)

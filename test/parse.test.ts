@@ -71,6 +71,8 @@ async function makeXlsx(rows: Array<Array<string | number>>): Promise<Uint8Array
 interface CoordinateSheetFixture {
   name: string
   relationshipTarget: string
+  relationshipType?: string
+  targetMode?: string
   partName: string
   xml: string
 }
@@ -83,7 +85,7 @@ async function makeCoordinateXlsx(sheets: CoordinateSheetFixture[]): Promise<Uin
   zip.file('[Content_Types].xml', `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${overrides}</Types>`)
   zip.file('_rels/.rels', `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`)
   zip.file('xl/workbook.xml', `<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheets.map((sheet, index) => `<sheet name="${sheet.name}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`).join('')}</sheets></workbook>`)
-  zip.file('xl/_rels/workbook.xml.rels', `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((sheet, index) => `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="${sheet.relationshipTarget}"/>`).join('')}</Relationships>`)
+  zip.file('xl/_rels/workbook.xml.rels', `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((sheet, index) => `<Relationship Id="rId${index + 1}" Type="${sheet.relationshipType ?? 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet'}" Target="${sheet.relationshipTarget}"${sheet.targetMode === undefined ? '' : ` TargetMode="${sheet.targetMode}"`}/>`).join('')}</Relationships>`)
   for (const sheet of sheets) zip.file(sheet.partName, sheet.xml)
   return new Uint8Array(await zip.generateAsync({ type: 'nodebuffer' }))
 }
@@ -277,6 +279,21 @@ test('xlsx accepts a bounded sparse grid at a custom relationship target', async
   assert.equal(workbook[0].data.length, 1000)
   assert.equal(workbook[0].data[999][99], 'SPARSE_OK')
   assert.match(projectXlsx(workbook, { sheetRowLimit: 1, listOnly: true }), /used CV1000:CV1000/)
+})
+
+test('xlsx inspects worksheet members even when their relationship says External', async () => {
+  const bytes = await makeCoordinateXlsx([{
+    name: 'External-labelled member',
+    relationshipTarget: 'custom/external&#45;sheet.xml',
+    relationshipType: 'http://purl.oclc.org/ooxml/officeDocument/relationships/worksheet',
+    targetMode: 'External',
+    partName: 'xl/custom/external-sheet.xml',
+    xml: `<?xml version="1.0"?><x:worksheet xmlns:x="http://purl.oclc.org/ooxml/spreadsheetml/main"><x:sheetData><x:row r="200001"><x:c r="A200001" t="inlineStr"><x:is><x:t>x</x:t></x:is></x:c></x:row></x:sheetData></x:worksheet>`
+  }])
+  await assert.rejects(
+    parseXlsxWorkbook(bytes),
+    /worksheet .*external-sheet\.xml.*200001 logical rows.*limit 200000/
+  )
 })
 
 test('xlsx rejects tiny worksheets with extreme row or cell coordinates before decoding', async () => {
