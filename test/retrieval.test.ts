@@ -512,6 +512,7 @@ test('search_documents index mode returns a compact inventory before query retri
     assert.equal(indexed.backendNotice, 'Non-persistent JS fallback active')
     assert.equal(indexed.indexedDocuments, 4)
     assert.equal(indexed.documents.length, 4)
+    assert.deepEqual(Object.keys(indexed.documents[0]).sort(), ['format', 'path', 'version'])
     assert.deepEqual(indexed.results, [])
 
     const first = await tool.execute(searchArgs, exec) as {

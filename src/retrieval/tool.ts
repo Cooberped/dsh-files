@@ -447,8 +447,8 @@ export function defineSearchDocumentsTool(
         backend.gc(now, config.documentTtlMs, config.queryLogTtlMs)
         lastGcAt = now
       }
-      const documents = sources.map((source) => source.descriptor)
-      const truncatedDocuments = documents.flatMap((document) => {
+      const descriptors = sources.map((source) => source.descriptor)
+      const truncatedDocuments = descriptors.flatMap((document) => {
         const hit = backend.search(buildQueryPlan(INDEX_TRUNCATION_MARKER), [document.id], 1)
           .find((candidate) => candidate.text.includes(INDEX_TRUNCATION_MARKER))
         if (hit === undefined) return []
@@ -459,6 +459,10 @@ export function defineSearchDocumentsTool(
           maxBlocks: recordedLimit === null ? config.maxBlocksPerDocument : Number(recordedLimit[1])
         }]
       })
+      // Keep backend-only identifiers out of the model-facing value. The
+      // declared output schema intentionally exposes only readable document
+      // identity, and Harness rejects undeclared properties fail-closed.
+      const documents = descriptors.map(({ path, format, version }) => ({ path, format, version }))
       if (input.query === undefined) {
         return {
           mode: 'index' as const,
