@@ -1,0 +1,53 @@
+name: Feature request / 功能建议
+description: Propose a scoped improvement to dsh-files / 提议边界清晰的改进
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please describe the user problem before the implementation. Large parser, storage, API, or security changes should be discussed before code is written.
+
+        请先说明用户问题，再描述实现。大型解析器、存储、API 或安全变更应先讨论再编码。
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / 问题
+      description: Who is affected, in what workflow, and with what evidence?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed outcome / 期望结果
+      description: Describe the contract and user-visible result, not only a library choice.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered / 已考虑的替代方案
+      description: Include smaller or dependency-free options where relevant.
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and risk / 兼容性与风险
+      description: Formats, coordinates, storage, session isolation, package size, performance, and licenses.
+  - type: dropdown
+    id: contribution
+    attributes:
+      label: Contribution intent / 是否愿意贡献实现
+      options:
+        - I can open a pull request / 我可以提交 PR
+        - I can help test or review / 我可以协助测试或评审
+        - I am proposing only / 仅提出建议
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist / 检查
+      options:
+        - label: I searched existing issues and pull requests. / 我已检索已有 Issue 和 PR。
+          required: true
+        - label: No private document or sensitive data is included. / 未包含私密文档或敏感数据。
+          required: true

@@ -1,0 +1,12 @@
+# Default maintainer review for the Cooberped community fork.
+* @Cooberped
+
+# Security, governance, release, dependency, and core runtime boundaries.
+/.github/ @Cooberped
+/SECURITY.md @Cooberped
+/RELEASING.md @Cooberped
+/THIRD_PARTY_NOTICES.md @Cooberped
+/LICENSE @Cooberped
+/package.json @Cooberped
+/pnpm-lock.yaml @Cooberped
+/src/ @Cooberped

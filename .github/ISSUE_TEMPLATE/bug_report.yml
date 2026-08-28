@@ -1,0 +1,72 @@
+name: Bug report / 缺陷报告
+description: Report a reproducible dsh-files defect without private data / 报告可复现且不含隐私数据的缺陷
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a defect. Search existing issues first. Do **not** include credentials, real business/HR documents, customer data, session identifiers, or sensitive local paths. Security vulnerabilities belong in the private process described in `SECURITY.md`.
+
+        感谢反馈。请先检索已有 Issue；不要上传凭据、真实业务/HR 文档、客户数据、会话标识或敏感本地路径。安全漏洞请按 `SECURITY.md` 私密报告。
+  - type: input
+    id: version
+    attributes:
+      label: dsh-files version and commit / 版本与 commit
+      placeholder: "0.6.0-beta.1 / abc1234"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment / 环境
+      description: OS, architecture, Node.js, DeepSeek Harness, browser if relevant
+      placeholder: "macOS arm64; Node 24.x; DSH 0.1.1-rc.2; Chrome ..."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction / 最小复现
+      description: Use synthetic files only and list exact steps.
+      placeholder: "1. Install ...\n2. Upload a synthetic ...\n3. Call ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior / 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior / 实际行为
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence / 已脱敏证据
+      description: Paste the smallest useful log or link to a synthetic repository. Redact paths, tokens, and document content.
+      render: shell
+  - type: dropdown
+    id: regression
+    attributes:
+      label: Regression / 是否回归
+      options:
+        - Unknown / 不确定
+        - Yes / 是
+        - No / 否
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checklist / 安全检查
+      options:
+        - label: I searched existing issues and pull requests. / 我已检索已有 Issue 和 PR。
+          required: true
+        - label: This report contains no private or customer data. / 本报告不含隐私或客户数据。
+          required: true
+        - label: This is not a security vulnerability. / 这不是安全漏洞。
+          required: true
