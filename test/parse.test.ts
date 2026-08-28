@@ -7,7 +7,7 @@ import JSZip from 'jszip'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import { parsePdf } from '../src/parse/pdf.ts'
 import { parseDocx } from '../src/parse/docx.ts'
-import { parseXlsx } from '../src/parse/xlsx.ts'
+import { parseXlsx, parseXlsxWorkbook, projectXlsx } from '../src/parse/xlsx.ts'
 import { parsePptx } from '../src/parse/pptx.ts'
 import { parseDocument } from '../src/parse/index.ts'
 import { decodeText, windowLines } from '../src/parse/text.ts'
@@ -66,6 +66,38 @@ async function makeXlsx(rows: Array<Array<string | number>>): Promise<Uint8Array
     .join('')
   zip.file('xl/worksheets/sheet1.xml', `<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${cells}</sheetData></worksheet>`)
   return new Uint8Array(await zip.generateAsync({ type: 'nodebuffer' }))
+}
+
+function patchCentralOriginalSizes(bytes: Uint8Array, declaredSizes: Record<string, number>): Uint8Array {
+  const output = Uint8Array.from(bytes)
+  const pending = new Set(Object.keys(declaredSizes))
+  const readU16 = (offset: number): number => output[offset] | (output[offset + 1] << 8)
+  const writeU32 = (offset: number, value: number): void => {
+    output[offset] = value & 0xff
+    output[offset + 1] = (value >>> 8) & 0xff
+    output[offset + 2] = (value >>> 16) & 0xff
+    output[offset + 3] = (value >>> 24) & 0xff
+  }
+  for (let offset = 0; offset + 46 <= output.length && pending.size > 0; offset += 1) {
+    if (
+      output[offset] !== 0x50 || output[offset + 1] !== 0x4b ||
+      output[offset + 2] !== 0x01 || output[offset + 3] !== 0x02
+    ) continue
+    const nameLength = readU16(offset + 28)
+    const extraLength = readU16(offset + 30)
+    const commentLength = readU16(offset + 32)
+    const next = offset + 46 + nameLength + extraLength + commentLength
+    if (next > output.length) continue
+    const name = new TextDecoder().decode(output.subarray(offset + 46, offset + 46 + nameLength))
+    const declaredSize = declaredSizes[name]
+    if (declaredSize !== undefined) {
+      writeU32(offset + 24, declaredSize)
+      pending.delete(name)
+    }
+    offset = next - 1
+  }
+  assert.deepEqual([...pending], [], `missing central-directory fixtures: ${[...pending].join(', ')}`)
+  return output
 }
 
 async function makePptx(): Promise<Uint8Array> {
@@ -173,6 +205,27 @@ test('xlsx text extraction with row limit', async () => {
   assert.match(limited, /truncated/)
 })
 
+test('xlsx rejects a hostile central-directory expansion size before decoding', async () => {
+  const bytes = await makeXlsx([['safe']])
+  const hostile = patchCentralOriginalSizes(bytes, {
+    'xl/worksheets/sheet1.xml': 0xfffffff0
+  })
+  await assert.rejects(
+    parseXlsx(hostile, { sheetRowLimit: 10 }),
+    /cannot unpack XLSX safely.*sheet1\.xml.*declares 4294967280 bytes/
+  )
+})
+
+test('xlsx workbook parsing can be reused for multiple projections', async () => {
+  const workbook = await parseXlsxWorkbook(await makeXlsx([
+    ['Name', 'Score'],
+    ['Alice', 42]
+  ]))
+  assert.equal(workbook.length, 1)
+  assert.match(projectXlsx(workbook, { sheetRowLimit: 10, listOnly: true }), /Workbook \(1 sheets\)/)
+  assert.match(projectXlsx(workbook, { sheetRowLimit: 10, sheet: 1 }), /Alice/)
+})
+
 test('utf-8 text decoding', () => {
   const bytes = new TextEncoder().encode('你好，世界\nline 2')
   assert.equal(decodeText(bytes), '你好，世界\nline 2')
@@ -222,6 +275,31 @@ async function makeMultiSheetXlsx(): Promise<Uint8Array> {
   zip.file('xl/worksheets/sheet2.xml', sheetXml(['beta', 'gamma', 'delta'], 's2'))
   return new Uint8Array(await zip.generateAsync({ type: 'nodebuffer' }))
 }
+
+test('xlsx rejects excessive aggregate XML expansion before decoding', async () => {
+  const thirtyMiB = 30 * 1024 * 1024
+  const hostile = patchCentralOriginalSizes(await makeMultiSheetXlsx(), {
+    '[Content_Types].xml': thirtyMiB,
+    'xl/workbook.xml': thirtyMiB,
+    'xl/_rels/workbook.xml.rels': thirtyMiB,
+    'xl/worksheets/sheet1.xml': thirtyMiB,
+    'xl/worksheets/sheet2.xml': thirtyMiB
+  })
+  await assert.rejects(
+    parseXlsx(hostile, { sheetRowLimit: 10 }),
+    /cannot unpack XLSX safely.*in total.*limit 134217728/
+  )
+})
+
+test('xlsx rejects overlong ZIP member names before decoding', async () => {
+  const zip = await JSZip.loadAsync(await makeXlsx([['safe']]))
+  zip.file(`xl/${'a'.repeat(1100)}.xml`, '<ignored/>')
+  const hostile = new Uint8Array(await zip.generateAsync({ type: 'nodebuffer' }))
+  await assert.rejects(
+    parseXlsx(hostile, { sheetRowLimit: 10 }),
+    /cannot unpack XLSX safely: member name is .* bytes \(limit 1024\)/
+  )
+})
 
 test('scan-only PDFs are flagged instead of returning empty text', async () => {
   const text = await parsePdf(await makeBlankPdf())

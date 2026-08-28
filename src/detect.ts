@@ -18,56 +18,98 @@ const SNIFF_BYTES = 8192
 /** 头部预读量：64 KiB 足够覆盖所有头部签名（PDF 头 / BOM / 已知二进制 / 文本探测）。 */
 export const HEAD_SNIFF_BYTES = 64 * 1024
 
+export interface ZipMemberMetadata {
+  name: string
+  /** File-name length as recorded in the central directory, in bytes. */
+  nameBytes: number
+  compressedSize: number
+  /** Declared uncompressed size (the ZIP field fflate calls originalSize). */
+  originalSize: number
+}
+
+const MAX_ZIP_MEMBERS = 4096
+// A normal OOXML part name is at most a few hundred bytes. Keeping a generous
+// metadata limit prevents hostile names from consuming disproportionate CPU
+// and memory before a format-specific parser can apply stricter limits.
+const MAX_ZIP_MEMBER_NAME_BYTES = 4096
+
 /**
- * Lightweight ZIP central-directory probe. Returns the member names recorded
- * in the archive, or null when the bytes are not a readable ZIP. Reads only
- * the central directory metadata — never decompresses anything.
+ * Lightweight ZIP central-directory probe. Returns bounded member metadata,
+ * or null when the bytes are not a supported single-disk ZIP. It never
+ * decompresses member data. ZIP64 is intentionally rejected: OOXML files well
+ * inside the upload limit do not need it, and 64-bit declared sizes must not be
+ * truncated into an unsafe 32-bit allocation decision.
  */
-export function zipMemberNames(bytes: Uint8Array): string[] | null {
+export function zipMembers(bytes: Uint8Array): ZipMemberMetadata[] | null {
   const len = bytes.length
   if (len < 22) return null
   // End Of Central Directory record: PK\x05\x06, at least 22 bytes + comment.
-  const eocdMax = Math.min(len, 22 + 65535)
+  const eocdMin = Math.max(0, len - 22 - 65535)
   let eocd = -1
-  for (let i = len - eocdMax; i + 22 <= len; i++) {
-    if (bytes[i] === 0x50 && bytes[i + 1] === 0x4b && bytes[i + 2] === 0x05 && bytes[i + 3] === 0x06) {
+  const readU16 = (off: number): number => bytes[off] | (bytes[off + 1] << 8)
+  // Search backwards, as ZIP readers do, and require the EOCD comment length
+  // to end exactly at EOF. This avoids accepting a forged signature embedded
+  // in member data or in the real archive comment.
+  for (let i = len - 22; i >= eocdMin; i -= 1) {
+    if (
+      bytes[i] === 0x50 && bytes[i + 1] === 0x4b && bytes[i + 2] === 0x05 && bytes[i + 3] === 0x06 &&
+      i + 22 + readU16(i + 20) === len
+    ) {
       eocd = i
       break
     }
   }
   if (eocd < 0) return null
-  const readU16 = (off: number): number => bytes[off] | (bytes[off + 1] << 8)
   // ZIP 中央目录偏移是 UInt32（小端）。用 | 组合再 >>>0 转无符号，避免
   // 高位字节把中间结果推进 32 位有符号负值导致读取错误。
   const readU32 = (off: number): number =>
     (bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] << 24)) >>> 0
+  const diskNumber = readU16(eocd + 4)
+  const centralDirectoryDisk = readU16(eocd + 6)
+  const entriesOnDisk = readU16(eocd + 8)
   const count = readU16(eocd + 10)
+  const cdSize = readU32(eocd + 12)
   const cdOffset = readU32(eocd + 16)
-  // 合法办公文档成员数远低于此；超限视为不可信归档，拒绝而非展开。
-  const MAX_MEMBERS = 4096
-  if (count === 0 || count > MAX_MEMBERS || cdOffset + 46 > len) return null
-  const names: string[] = []
+  if (
+    diskNumber !== 0 || centralDirectoryDisk !== 0 || entriesOnDisk !== count ||
+    count === 0 || count > MAX_ZIP_MEMBERS ||
+    cdSize === 0xffffffff || cdOffset === 0xffffffff ||
+    cdOffset > eocd || cdSize !== eocd - cdOffset
+  ) return null
+
+  const members: ZipMemberMetadata[] = []
+  const centralDirectoryEnd = cdOffset + cdSize
   let off = cdOffset
   for (let i = 0; i < count; i++) {
-    if (off + 46 > len) return null
+    if (off + 46 > centralDirectoryEnd) return null
     if (!(bytes[off] === 0x50 && bytes[off + 1] === 0x4b && bytes[off + 2] === 0x01 && bytes[off + 3] === 0x02)) {
       return null
     }
+    const compressedSize = readU32(off + 20)
+    const originalSize = readU32(off + 24)
     const nameLen = readU16(off + 28)
     const extraLen = readU16(off + 30)
     const commentLen = readU16(off + 32)
-    if (off + 46 + nameLen > len) return null
-    // 用 latin1 逐字节转写代替 String.fromCharCode(...spread)：
-    // spread 超过 ~12 万实参抛 RangeError，恶意大成员名可打崩进程。
-    // 中央目录成员名是 CP437，ASCII 前缀探测用 latin1 逐字节一致。
-    let s = ''
-    for (let j = 0; j < nameLen; j++) {
-      s += String.fromCharCode(bytes[off + 46 + j])
+    const next = off + 46 + nameLen + extraLen + commentLen
+    if (nameLen === 0 || nameLen > MAX_ZIP_MEMBER_NAME_BYTES || next > centralDirectoryEnd) return null
+    const utf8Name = (readU16(off + 8) & 0x0800) !== 0
+    let name: string
+    try {
+      name = new TextDecoder(utf8Name ? 'utf-8' : 'latin1', { fatal: utf8Name })
+        .decode(bytes.subarray(off + 46, off + 46 + nameLen))
+    } catch {
+      return null
     }
-    names.push(s)
-    off += 46 + nameLen + extraLen + commentLen
+    members.push({ name, nameBytes: nameLen, compressedSize, originalSize })
+    off = next
   }
-  return names
+  return off === centralDirectoryEnd ? members : null
+}
+
+/** Backwards-compatible name-only view used by existing format probes. */
+export function zipMemberNames(bytes: Uint8Array): string[] | null {
+  const members = zipMembers(bytes)
+  return members === null ? null : members.map((member) => member.name)
 }
 
 /** GB18030 可解即视为合法文本（fatal 模式无替换字符）。 */

@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import JSZip from 'jszip'
-import { sniffFormat, zipMemberNames, formatFromExtension, SUPPORTED_FORMATS } from '../src/detect.ts'
+import { sniffFormat, zipMemberNames, zipMembers, formatFromExtension, SUPPORTED_FORMATS } from '../src/detect.ts'
 
 async function makeZip(files: Record<string, string>): Promise<Uint8Array> {
   const zip = new JSZip()
@@ -98,6 +98,34 @@ test('zipMemberNames returns member list and rejects truncated archives', async 
   assert.ok(names !== null)
   assert.ok(names.includes('word/document.xml'))
   assert.equal(zipMemberNames(new Uint8Array([0x50, 0x4b, 0x03, 0x04])), null)
+})
+
+test('zipMembers exposes bounded central-directory size metadata', async () => {
+  const bytes = await makeZip({ 'xl/workbook.xml': '<workbook/>' })
+  const members = zipMembers(bytes)
+  assert.ok(members !== null)
+  const workbook = members.find((member) => member.name === 'xl/workbook.xml')
+  assert.ok(workbook !== undefined)
+  assert.equal(workbook.nameBytes, 'xl/workbook.xml'.length)
+  assert.equal(workbook.originalSize, new TextEncoder().encode('<workbook/>').length)
+  assert.ok(workbook.compressedSize > 0)
+})
+
+test('zipMembers rejects declared member counts above the metadata bound', async () => {
+  const bytes = Uint8Array.from(await makeZip({ 'xl/workbook.xml': '<workbook/>' }))
+  let eocd = -1
+  for (let offset = bytes.length - 22; offset >= 0; offset -= 1) {
+    if (bytes[offset] === 0x50 && bytes[offset + 1] === 0x4b && bytes[offset + 2] === 0x05 && bytes[offset + 3] === 0x06) {
+      eocd = offset
+      break
+    }
+  }
+  assert.ok(eocd >= 0)
+  for (const offset of [eocd + 8, eocd + 10]) {
+    bytes[offset] = 0x01
+    bytes[offset + 1] = 0x10 // 4097, one above the supported bound.
+  }
+  assert.equal(zipMembers(bytes), null)
 })
 
 test('formatFromExtension covers the supported set', () => {
