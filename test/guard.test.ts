@@ -71,8 +71,10 @@ test('origin is compared by host part only: upstream TLS termination passes', ()
   // TLS 在 Caddy/frp 终结：socket 明文，浏览器 Origin 是 https。
   const g = ['dsh.example.com']
   assert.equal(networkGuard(req('dsh.example.com', 'https://dsh.example.com'), g), null)
-  // 同 host 不同端口也通过（origin 只比 host 部分，与官方栅栏一致）。
+  // URL 会省略 https 的默认 443 端口，因此上游 TLS 终结仍视为同一 authority。
   assert.equal(networkGuard(req('dsh.example.com', 'https://dsh.example.com:443'), g), null)
+  // 非默认端口属于不同 authority，不能只凭相同 hostname 放行。
+  assert.equal(networkGuard(req('dsh.example.com', 'https://dsh.example.com:8443'), g), 'forbidden: cross-origin')
 })
 
 test('loopback + origin with explicit scheme passes', () => {

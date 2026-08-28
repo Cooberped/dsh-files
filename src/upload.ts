@@ -51,6 +51,7 @@ export const DEFAULT_MAX_SESSION_BYTES = 512 * 1024 * 1024
 export const MAX_UPLOAD_RELATIVE_DEPTH = 16
 
 const SAFE_SESSION_ID = /^[A-Za-z0-9_-]{1,80}$/
+const MAX_SESSION_ID_BYTES = 1024
 const CONTENT_DIGEST_HEX_LENGTH = 16
 
 /**
@@ -122,7 +123,7 @@ export function sanitizeSessionId(id: string): string {
 
 /** Raw session ids are resolver credentials; reject controls/oversize, never lossy-normalize them. */
 export function isValidSessionId(id: string): boolean {
-  return id !== '' && !/[\u0000-\u001f\u007f]/.test(id)
+  return id !== '' && Buffer.byteLength(id, 'utf8') <= MAX_SESSION_ID_BYTES && !/[\u0000-\u001f\u007f]/.test(id)
 }
 
 /**

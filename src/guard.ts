@@ -88,7 +88,7 @@ export function networkGuard(req: IncomingMessage, trustedHosts: string[] = []):
     const parsedOrigin = parseHost(origin)
     // Origin 只比较 host 部分：TLS 在上游终结时 socket 是明文 http 而浏览器
     // Origin 是 https，scheme 参与比较会误杀同一部署（与官方栅栏一致）。
-    if (parsedOrigin === null || parsedOrigin.hostname !== parsedHost.hostname) {
+    if (parsedOrigin === null || parsedOrigin.host !== parsedHost.host) {
       return 'forbidden: cross-origin'
     }
   }

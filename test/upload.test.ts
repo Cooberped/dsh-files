@@ -47,6 +47,7 @@ test('sanitizeSessionId keeps safe ids stable and prevents lossy collisions', ()
   assert.equal(isValidSessionId('session-12'), true)
   assert.equal(isValidSessionId('会话:12'), true)
   assert.equal(isValidSessionId('bad\u0000id'), false)
+  assert.equal(isValidSessionId('x'.repeat(1025)), false)
 })
 
 test('session upload quota defaults to 512 MiB in the handler and plugin schema', () => {
