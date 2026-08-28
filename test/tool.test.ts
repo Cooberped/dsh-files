@@ -6,6 +6,75 @@ import assert from 'node:assert/strict'
 import { formatOutputBudget, defineReadDocumentTool } from '../src/tool.ts'
 import { ParseCache } from '../src/cache.ts'
 import { FsError, FsTargetKey, FsVersion } from '@deepseek-ai/dsh-fs'
+import { PDFDocument, StandardFonts } from 'pdf-lib'
+import JSZip from 'jszip'
+import { retrievalDocumentVersion } from '../src/retrieval/blocks.ts'
+
+function testTool(bytes: Uint8Array, displayPath: string) {
+  const fs = {
+    resolve: async () => ({ targetKey: FsTargetKey(`target:${displayPath}`), displayPath }),
+    stat: async () => ({ version: FsVersion('fs-v1'), type: 'file', size: bytes.length }),
+    readBytes: async () => bytes
+  }
+  return defineReadDocumentTool(
+    { fs, emit: () => undefined },
+    {
+      readLimit: 800,
+      maxFileBytes: 24 * 1024 * 1024,
+      sheetRowLimit: 200,
+      maxSheets: 12,
+      maxOutputChars: 24000
+    },
+    new ParseCache(8, 8 * 1024 * 1024)
+  )
+}
+
+function testExec(tool: ReturnType<typeof defineReadDocumentTool>, args: Record<string, unknown>): Promise<unknown> {
+  const exec = {
+    signal: new AbortController().signal,
+    agent: { session: { header: { cwd: '/workspace' } } }
+  } as unknown as Parameters<typeof tool.execute>[1]
+  return tool.execute(args, exec)
+}
+
+async function coordinatePdf(): Promise<Uint8Array> {
+  const doc = await PDFDocument.create()
+  const font = await doc.embedFont(StandardFonts.Helvetica)
+  doc.addPage([400, 300]).drawText('PAGE-ONE-ONLY', { x: 50, y: 250, size: 14, font })
+  doc.addPage([400, 300]).drawText('PAGE-TWO-TARGET', { x: 50, y: 250, size: 14, font })
+  return new Uint8Array(await doc.save())
+}
+
+async function coordinatePptx(): Promise<Uint8Array> {
+  const zip = new JSZip()
+  zip.file('[Content_Types].xml', '<?xml version="1.0"?><Types/>')
+  zip.file('ppt/presentation.xml', `<?xml version="1.0"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst><p:sldId id="300" r:id="rId1"/><p:sldId id="301" r:id="rId2"/></p:sldIdLst>
+</p:presentation>`)
+  zip.file('ppt/_rels/presentation.xml.rels', `<?xml version="1.0"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide2.xml"/>
+</Relationships>`)
+  const slide = (text: string) => `<?xml version="1.0"?>
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>${text}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld>
+</p:sld>`
+  zip.file('ppt/slides/slide1.xml', slide('SLIDE-ONE-ONLY'))
+  zip.file('ppt/slides/slide2.xml', slide('SLIDE-TWO-TARGET'))
+  return new Uint8Array(await zip.generateAsync({ type: 'nodebuffer' }))
+}
+
+async function coordinateXlsx(): Promise<Uint8Array> {
+  const zip = new JSZip()
+  zip.file('[Content_Types].xml', `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`)
+  zip.file('_rels/.rels', `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`)
+  zip.file('xl/workbook.xml', `<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="O'Brien Plan" sheetId="1" r:id="rId1"/></sheets></workbook>`)
+  zip.file('xl/_rels/workbook.xml.rels', `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`)
+  zip.file('xl/worksheets/sheet1.xml', `<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>ignore</t></is></c></row><row r="2"><c r="B2" t="inlineStr"><is><t>XLSX-TARGET</t></is></c><c r="C2"><v>42</v></c></row></sheetData></worksheet>`)
+  return new Uint8Array(await zip.generateAsync({ type: 'nodebuffer' }))
+}
 
 test('text uses the full base budget', () => {
   assert.equal(formatOutputBudget('text', 24000), 24000)
@@ -26,6 +95,64 @@ test('the halving never drops below the floor for a tiny base', () => {
   assert.equal(formatOutputBudget('docx', 2000), 2000)
   assert.equal(formatOutputBudget('pptx', 2000), 2000)
   assert.equal(formatOutputBudget('xlsx', 2000), 2000) // floor(1500) clamped to 2000
+})
+
+test('read_document expands a versioned PDF page coordinate exactly', async () => {
+  const bytes = await coordinatePdf()
+  const result = await testExec(testTool(bytes, '/workspace/sample.pdf'), {
+    file_path: 'sample.pdf',
+    coordinate: 'page:2',
+    version: retrievalDocumentVersion(bytes)
+  }) as {
+    version: string
+    coordinate: string
+    lines: Array<{ text: string }>
+  }
+  assert.equal(result.version, retrievalDocumentVersion(bytes))
+  assert.equal(result.coordinate, 'page:2')
+  assert.match(result.lines.map((line) => line.text).join('\n'), /PAGE-TWO-TARGET/)
+  assert.doesNotMatch(result.lines.map((line) => line.text).join('\n'), /PAGE-ONE-ONLY/)
+})
+
+test('read_document expands a versioned PPTX slide coordinate exactly', async () => {
+  const bytes = await coordinatePptx()
+  const result = await testExec(testTool(bytes, '/workspace/sample.pptx'), {
+    file_path: 'sample.pptx',
+    coordinate: 'slide:2',
+    version: retrievalDocumentVersion(bytes)
+  }) as { coordinate: string; lines: Array<{ text: string }> }
+  const text = result.lines.map((line) => line.text).join('\n')
+  assert.equal(result.coordinate, 'slide:2')
+  assert.match(text, /SLIDE-TWO-TARGET/)
+  assert.doesNotMatch(text, /SLIDE-ONE-ONLY/)
+})
+
+test('read_document resolves a quoted XLSX Sheet!Range coordinate without list_sheets', async () => {
+  const bytes = await coordinateXlsx()
+  const result = await testExec(testTool(bytes, '/workspace/sample.xlsx'), {
+    file_path: 'sample.xlsx',
+    coordinate: "'O''Brien Plan'!B2:C2",
+    version: retrievalDocumentVersion(bytes)
+  }) as { coordinate: string; sheet: number; lines: Array<{ text: string }> }
+  const text = result.lines.map((line) => line.text).join('\n')
+  assert.equal(result.coordinate, "'O''Brien Plan'!B2:C2")
+  assert.equal(result.sheet, 1)
+  assert.match(text, /range B2:C2/)
+  assert.match(text, /XLSX-TARGET/)
+  assert.match(text, /42/)
+  assert.doesNotMatch(text, /ignore/)
+})
+
+test('read_document rejects a stale search version before coordinate expansion', async () => {
+  const bytes = await coordinatePdf()
+  await assert.rejects(
+    testExec(testTool(bytes, '/workspace/sample.pdf'), {
+      file_path: 'sample.pdf',
+      coordinate: 'page:2',
+      version: retrievalDocumentVersion(bytes, 'retrieval-v1')
+    }),
+    /requested version .* current version .* rerun search_documents/
+  )
 })
 
 // 回归：#5 —— readBytes 的 maxBytes 是整个文件上限（stat 超限即 FS_TOO_LARGE，

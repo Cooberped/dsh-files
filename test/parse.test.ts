@@ -5,7 +5,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import JSZip from 'jszip'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
-import { parsePdf } from '../src/parse/pdf.ts'
+import { PDF_PAGE_SEPARATOR, parsePdf, splitPdfPages } from '../src/parse/pdf.ts'
 import { parseDocx } from '../src/parse/docx.ts'
 import { parseXlsx, parseXlsxWorkbook, projectXlsx } from '../src/parse/xlsx.ts'
 import { parsePptx } from '../src/parse/pptx.ts'
@@ -143,6 +143,24 @@ test('pdf separated text runs get a space inserted', async () => {
   // 间隙检测应补空格。
   const text = await parsePdf(await makeSplitRunPdf())
   assert.match(text, /Hello world/)
+})
+
+test('PDF form-feed page boundaries preserve empty pages and page-local blank lines', async () => {
+  const doc = await PDFDocument.create()
+  const font = await doc.embedFont(StandardFonts.Helvetica)
+  const first = doc.addPage([400, 300])
+  first.drawText('PAGE-ONE', { x: 50, y: 250, size: 14, font })
+  doc.addPage([400, 300])
+  const third = doc.addPage([400, 300])
+  third.drawText('PAGE-THREE', { x: 50, y: 250, size: 14, font })
+  const pages = splitPdfPages(await parsePdf(new Uint8Array(await doc.save())))
+  assert.equal(pages.length, 3)
+  assert.match(pages[0], /PAGE-ONE/)
+  assert.equal(pages[1], '')
+  assert.match(pages[2], /PAGE-THREE/)
+
+  const withPageLocalBlankLine = `first\n\nthird${PDF_PAGE_SEPARATOR}next page`
+  assert.deepEqual(splitPdfPages(withPageLocalBlankLine), ['first\n\nthird', 'next page'])
 })
 
 test('docx text extraction', async () => {

@@ -5,6 +5,48 @@
 import { createHash } from 'node:crypto'
 import type { DocumentFormat } from '../detect.ts'
 import { parseDocument } from '../parse/index.ts'
+import { splitPdfPages } from '../parse/pdf.ts'
+
+/**
+ * Bump whenever parser output or block/coordinate semantics change. Binding
+ * this to the content digest forces a persistent backend to rebuild old
+ * projections instead of serving coordinates produced by obsolete rules.
+ */
+export const RETRIEVAL_SCHEMA_VERSION = 'retrieval-v2'
+
+export function retrievalDocumentVersion(
+  bytes: Uint8Array,
+  schemaVersion = RETRIEVAL_SCHEMA_VERSION
+): string {
+  if (!/^[a-z0-9][a-z0-9._-]*$/iu.test(schemaVersion)) {
+    throw new Error(`invalid retrieval schema version ${JSON.stringify(schemaVersion)}`)
+  }
+  return `${schemaVersion}:${createHash('sha256').update(Buffer.from(bytes)).digest('hex')}`
+}
+
+export const INDEX_TRUNCATION_MARKER = 'dshfilesindextruncated'
+
+export type DocumentLocator =
+  | { kind: 'page'; page: number; startLine?: number; endLine?: number }
+  | { kind: 'slide'; slide: number; startLine?: number; endLine?: number }
+  | { kind: 'line'; startLine: number; endLine: number }
+  | { kind: 'sheet'; sheet: string; sheetIndex?: number; cellRange: string; part?: number }
+
+export interface DocumentBlockBuildMetadata {
+  truncated: boolean
+  maxBlocks: number
+  sheetIndexes: ReadonlyMap<string, number>
+}
+
+const buildMetadata = new WeakMap<ReadonlyArray<DocumentBlock>, DocumentBlockBuildMetadata>()
+
+export function documentBlockBuildMetadata(blocks: ReadonlyArray<DocumentBlock>): DocumentBlockBuildMetadata {
+  return buildMetadata.get(blocks) ?? {
+    truncated: false,
+    maxBlocks: blocks.length,
+    sheetIndexes: new Map()
+  }
+}
 
 export interface DocumentDescriptor {
   id: string
@@ -27,6 +69,77 @@ export interface BlockBuildOptions {
   blockChars: number
   maxBlocks: number
   signal?: AbortSignal
+}
+
+function positiveRange(start: string, end: string): { startLine: number; endLine: number } | null {
+  const startLine = Number(start)
+  const endLine = Number(end)
+  if (!Number.isInteger(startLine) || !Number.isInteger(endLine) || startLine < 1 || endLine < startLine) return null
+  return { startLine, endLine }
+}
+
+/** Parse the stable coordinate grammar emitted by retrieval blocks. */
+export function parseDocumentLocator(
+  coordinate: string,
+  sheetIndexes?: ReadonlyMap<string, number>
+): DocumentLocator | null {
+  const page = /^page:(\d+)(?:,lines:(\d+)-(\d+))?$/u.exec(coordinate)
+  if (page !== null) {
+    const pageNumber = Number(page[1])
+    if (!Number.isInteger(pageNumber) || pageNumber < 1) return null
+    const range = page[2] === undefined ? null : positiveRange(page[2], page[3])
+    if (page[2] !== undefined && range === null) return null
+    return { kind: 'page', page: pageNumber, ...(range ?? {}) }
+  }
+  const slide = /^slide:(\d+)(?:,lines:(\d+)-(\d+))?$/u.exec(coordinate)
+  if (slide !== null) {
+    const slideNumber = Number(slide[1])
+    if (!Number.isInteger(slideNumber) || slideNumber < 1) return null
+    const range = slide[2] === undefined ? null : positiveRange(slide[2], slide[3])
+    if (slide[2] !== undefined && range === null) return null
+    return { kind: 'slide', slide: slideNumber, ...(range ?? {}) }
+  }
+  const oneLine = /^line:(\d+)$/u.exec(coordinate)
+  if (oneLine !== null) {
+    const line = Number(oneLine[1])
+    return Number.isInteger(line) && line >= 1 ? { kind: 'line', startLine: line, endLine: line } : null
+  }
+  const lines = /^lines:(\d+)-(\d+)$/u.exec(coordinate)
+  if (lines !== null) {
+    const range = positiveRange(lines[1], lines[2])
+    return range === null ? null : { kind: 'line', ...range }
+  }
+
+  const partMatch = /,part:(\d+)$/u.exec(coordinate)
+  const cellCoordinate = partMatch === null ? coordinate : coordinate.slice(0, partMatch.index)
+  const quoted = /^'((?:[^']|'')+)'!([A-Z]{1,3}\d+:[A-Z]{1,3}\d+)$/u.exec(cellCoordinate)
+  const plain = quoted === null ? /^([^!'\r\n]+)!([A-Z]{1,3}\d+:[A-Z]{1,3}\d+)$/u.exec(cellCoordinate) : null
+  const match = quoted ?? plain
+  if (match !== null) {
+    const sheet = (quoted === null ? match[1] : match[1].replace(/''/g, "'")).normalize('NFC')
+    const part = partMatch === null ? undefined : Number(partMatch[1])
+    const sheetIndex = sheetIndexes?.get(sheet)
+    if (part !== undefined && (!Number.isInteger(part) || part < 1)) return null
+    return {
+      kind: 'sheet',
+      sheet,
+      ...(sheetIndex === undefined ? {} : { sheetIndex }),
+      cellRange: match[2],
+      ...(part === undefined ? {} : { part })
+    }
+  }
+  return null
+}
+
+/** Excel-compatible sheet reference; quote unsafe names and escape apostrophes. */
+export function formatWorksheetName(name: string): string {
+  const normalized = name.normalize('NFC')
+  if (/[\r\n]/u.test(normalized)) {
+    throw new Error(`cannot index XLSX: worksheet name ${JSON.stringify(normalized)} contains a line break`)
+  }
+  return /^[\p{L}\p{M}\p{N}_]+$/u.test(normalized)
+    ? normalized
+    : `'${normalized.replace(/'/g, "''")}'`
 }
 
 function checkAborted(signal?: AbortSignal): void {
@@ -68,15 +181,19 @@ function splitLongLine(line: string, maxChars: number): string[] {
   return output
 }
 
-function chunkLines(value: string, maxChars: number): TextChunk[] {
+const COOPERATIVE_YIELD_INTERVAL = 128
+
+async function yieldToEventLoop(signal?: AbortSignal): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  checkAborted(signal)
+}
+
+async function chunkLines(value: string, maxChars: number, signal?: AbortSignal): Promise<TextChunk[]> {
   const source = value.split(/\r?\n/u)
-  const expanded: Array<{ line: number; value: string }> = []
-  for (const [index, line] of source.entries()) {
-    for (const part of splitLongLine(line, maxChars)) expanded.push({ line: index + 1, value: part })
-  }
   const output: TextChunk[] = []
   let current: Array<{ line: number; value: string }> = []
   let size = 0
+  let operations = 0
   const flush = () => {
     if (current.length === 0) return
     output.push({
@@ -87,29 +204,41 @@ function chunkLines(value: string, maxChars: number): TextChunk[] {
     current = []
     size = 0
   }
-  for (const entry of expanded) {
-    const added = entry.value.length + (current.length > 0 ? 1 : 0)
-    if (current.length > 0 && size + added > maxChars) flush()
-    current.push(entry)
-    size += entry.value.length + (current.length > 1 ? 1 : 0)
+  for (const [index, line] of source.entries()) {
+    for (const part of splitLongLine(line, maxChars)) {
+      const entry = { line: index + 1, value: part }
+      const added = entry.value.length + (current.length > 0 ? 1 : 0)
+      if (current.length > 0 && size + added > maxChars) flush()
+      current.push(entry)
+      size += entry.value.length + (current.length > 1 ? 1 : 0)
+      operations += 1
+      if (operations % COOPERATIVE_YIELD_INTERVAL === 0) await yieldToEventLoop(signal)
+    }
   }
   flush()
   return output.filter((entry) => entry.text !== '')
 }
 
+interface BlockBuildState {
+  output: DocumentBlock[]
+  truncated: boolean
+  appendedSinceYield: number
+}
+
 function appendBlock(
-  output: DocumentBlock[],
+  state: BlockBuildState,
   document: DocumentDescriptor,
   coordinate: string,
   heading: string,
   text: string,
   maxBlocks: number
-): void {
-  if (output.length >= maxBlocks) {
-    throw new Error(`document produced more than ${maxBlocks} retrieval blocks; narrow the document or raise retrievalMaxBlocksPerDocument`)
+): boolean {
+  if (state.output.length >= maxBlocks) {
+    state.truncated = true
+    return false
   }
-  const ordinal = output.length + 1
-  output.push({
+  const ordinal = state.output.length + 1
+  state.output.push({
     id: blockId(document, coordinate, ordinal, text),
     documentId: document.id,
     version: document.version,
@@ -118,88 +247,107 @@ function appendBlock(
     heading,
     text
   })
+  state.appendedSinceYield += 1
+  return true
 }
 
-function genericBlocks(
+async function maybeYieldAfterBlock(state: BlockBuildState, signal?: AbortSignal): Promise<void> {
+  if (state.appendedSinceYield < COOPERATIVE_YIELD_INTERVAL) return
+  state.appendedSinceYield = 0
+  await yieldToEventLoop(signal)
+}
+
+async function genericBlocks(
   text: string,
   document: DocumentDescriptor,
-  output: DocumentBlock[],
+  state: BlockBuildState,
   options: BlockBuildOptions
-): void {
-  for (const chunk of chunkLines(text, options.blockChars)) {
+): Promise<void> {
+  for (const chunk of await chunkLines(text, options.blockChars, options.signal)) {
     checkAborted(options.signal)
     const coordinate = chunk.startLine === chunk.endLine
       ? `line:${chunk.startLine}`
       : `lines:${chunk.startLine}-${chunk.endLine}`
-    appendBlock(
-      output,
+    if (!appendBlock(
+      state,
       document,
       coordinate,
       headingFromLines(chunk.text.split('\n'), document.path),
       chunk.text,
       options.maxBlocks
-    )
+    )) break
+    await maybeYieldAfterBlock(state, options.signal)
   }
 }
 
 async function pdfBlocks(
   bytes: Uint8Array,
   document: DocumentDescriptor,
-  output: DocumentBlock[],
+  state: BlockBuildState,
   options: BlockBuildOptions
 ): Promise<void> {
   const text = await parseDocument(bytes, 'pdf', { sheetRowLimit: 1 })
-  // parsePdf joins pages with exactly one blank line. Empty pages remain empty
-  // array entries when split on the exact separator, preserving page numbers.
-  const pages = text.split('\n\n')
-  for (const [pageIndex, page] of pages.entries()) {
+  const pages = splitPdfPages(text)
+  pages: for (const [pageIndex, page] of pages.entries()) {
     checkAborted(options.signal)
-    const chunks = chunkLines(page, options.blockChars)
-    for (const [chunkIndex, chunk] of chunks.entries()) {
+    const chunks = await chunkLines(page, options.blockChars, options.signal)
+    for (const chunk of chunks) {
       const base = `page:${pageIndex + 1}`
       const coordinate = chunks.length === 1 ? base : `${base},lines:${chunk.startLine}-${chunk.endLine}`
-      appendBlock(
-        output,
+      if (!appendBlock(
+        state,
         document,
         coordinate,
         headingFromLines(chunk.text.split('\n'), `Page ${pageIndex + 1}`),
         chunk.text,
         options.maxBlocks
-      )
+      )) break pages
+      await maybeYieldAfterBlock(state, options.signal)
     }
   }
+}
+
+export interface PptxSlideSection {
+  slide: number
+  text: string
+}
+
+export function splitPptxSlides(text: string): PptxSlideSection[] {
+  const markers = [...text.matchAll(/^### Slide (\d+)\n/gmu)]
+  return markers.map((marker, index) => {
+    const start = (marker.index ?? 0) + marker[0].length
+    const end = markers[index + 1]?.index ?? text.length
+    return { slide: Number(marker[1]), text: text.slice(start, end).trim() }
+  })
 }
 
 async function pptxBlocks(
   bytes: Uint8Array,
   document: DocumentDescriptor,
-  output: DocumentBlock[],
+  state: BlockBuildState,
   options: BlockBuildOptions
 ): Promise<void> {
   const text = await parseDocument(bytes, 'pptx', { sheetRowLimit: 1 })
-  const markers = [...text.matchAll(/^### Slide (\d+)\n/gmu)]
-  if (markers.length === 0) {
-    genericBlocks(text, document, output, options)
+  const slides = splitPptxSlides(text)
+  if (slides.length === 0) {
+    await genericBlocks(text, document, state, options)
     return
   }
-  for (const [index, marker] of markers.entries()) {
+  slides: for (const section of slides) {
     checkAborted(options.signal)
-    const slideNumber = Number(marker[1])
-    const start = (marker.index ?? 0) + marker[0].length
-    const end = markers[index + 1]?.index ?? text.length
-    const body = text.slice(start, end).trim()
-    const chunks = chunkLines(body, options.blockChars)
+    const chunks = await chunkLines(section.text, options.blockChars, options.signal)
     for (const chunk of chunks) {
-      const base = `slide:${slideNumber}`
+      const base = `slide:${section.slide}`
       const coordinate = chunks.length === 1 ? base : `${base},lines:${chunk.startLine}-${chunk.endLine}`
-      appendBlock(
-        output,
+      if (!appendBlock(
+        state,
         document,
         coordinate,
-        headingFromLines(chunk.text.split('\n'), `Slide ${slideNumber}`),
+        headingFromLines(chunk.text.split('\n'), `Slide ${section.slide}`),
         chunk.text,
         options.maxBlocks
-      )
+      )) break slides
+      await maybeYieldAfterBlock(state, options.signal)
     }
   }
 }
@@ -220,14 +368,20 @@ interface WorkbookSheet {
   name: string
 }
 
-function parseWorkbookInventory(value: string): WorkbookSheet[] {
+export function parseWorkbookInventory(value: string): WorkbookSheet[] {
   const countMatch = /^### Workbook \((\d+) sheets\)/u.exec(value)
   if (countMatch === null) throw new Error('cannot index XLSX: parser returned an invalid workbook inventory')
   const count = Number(countMatch[1])
   const sheets: WorkbookSheet[] = []
-  for (const line of value.split('\n')) {
-    const match = /^(\d+)\. (.+) — used /u.exec(line)
-    if (match !== null) sheets.push({ index: Number(match[1]), name: match[2].normalize('NFC') })
+  const entries = value.matchAll(
+    /^(\d+)\. ([\s\S]*?) — used (?:empty|[A-Z]+\d+:[A-Z]+\d+); \d+ populated rows; \d+ non-empty cells$/gmu
+  )
+  for (const match of entries) {
+    const name = match[2].normalize('NFC')
+    if (/[\r\n]/u.test(name)) {
+      throw new Error(`cannot index XLSX: worksheet name ${JSON.stringify(name)} contains a line break`)
+    }
+    sheets.push({ index: Number(match[1]), name })
   }
   if (sheets.length !== count) {
     throw new Error(`cannot index XLSX: inventory declared ${count} sheets but described ${sheets.length}`)
@@ -249,12 +403,14 @@ function renderSpreadsheetRow(columns: string[], headerValues: string[], values:
 async function xlsxBlocks(
   bytes: Uint8Array,
   document: DocumentDescriptor,
-  output: DocumentBlock[],
+  state: BlockBuildState,
+  sheetIndexes: Map<string, number>,
   options: BlockBuildOptions
 ): Promise<void> {
   const inventory = await parseDocument(bytes, 'xlsx', { sheetRowLimit: 1, listOnly: true })
   const sheets = parseWorkbookInventory(inventory)
-  for (const sheet of sheets) {
+  for (const sheet of sheets) sheetIndexes.set(sheet.name, sheet.index)
+  sheets: for (const sheet of sheets) {
     checkAborted(options.signal)
     // Selecting one sheet asks the existing parser for all populated rows; no
     // parser implementation or default read_document path is changed here.
@@ -268,12 +424,15 @@ async function xlsxBlocks(
     if (headerIndex < 0) continue
     const columns = lines[headerIndex].split('\t').slice(1)
     const rows: Array<{ rowNumber: number; values: string[] }> = []
+    let scannedRows = 0
     for (const line of lines.slice(headerIndex + 1)) {
       if (line.trim() === '' || line.startsWith('… truncated:')) continue
       const cells = line.split('\t')
       const rowNumber = Number(cells.shift())
       if (!Number.isInteger(rowNumber) || rowNumber < 1) continue
       rows.push({ rowNumber, values: cells })
+      scannedRows += 1
+      if (scannedRows % COOPERATIVE_YIELD_INTERVAL === 0) await yieldToEventLoop(options.signal)
     }
     // The first row is often a title merged across columns. Prefer the first
     // row with at least two populated cells as the structural header; fall
@@ -283,7 +442,7 @@ async function xlsxBlocks(
     )?.values ?? []
     for (const { rowNumber, values } of rows) {
       const lastColumn = columnName(Math.max(columns.length, values.length, 1))
-      const coordinate = `${sheet.name}!A${rowNumber}:${lastColumn}${rowNumber}`
+      const coordinate = `${formatWorksheetName(sheet.name)}!A${rowNumber}:${lastColumn}${rowNumber}`
       const columnHeading = columns
         .map((column, index) => {
           const label = headerValues[index]?.trim()
@@ -293,17 +452,28 @@ async function xlsxBlocks(
       const heading = `${sheet.name} · ${coordinate} · ${columnHeading}`
       const rendered = renderSpreadsheetRow(columns, headerValues, values, rowNumber)
       for (const [partIndex, part] of splitLongLine(rendered, options.blockChars).entries()) {
-        appendBlock(
-          output,
+        if (!appendBlock(
+          state,
           document,
           partIndex === 0 ? coordinate : `${coordinate},part:${partIndex + 1}`,
           heading,
           part,
           options.maxBlocks
-        )
+        )) break sheets
+        await maybeYieldAfterBlock(state, options.signal)
       }
     }
   }
+}
+
+function markTruncated(state: BlockBuildState, document: DocumentDescriptor, maxBlocks: number): void {
+  if (!state.truncated) return
+  const last = state.output.at(-1)
+  if (last === undefined) return
+  const notice = `[Index truncated at ${maxBlocks} blocks; later document content is not searchable. Use read_document with a returned coordinate or sequential offset/limit paging. Marker: ${INDEX_TRUNCATION_MARKER}]`
+  last.heading = `${last.heading} · index truncated`
+  last.text = `${last.text}\n\n${notice}`
+  last.id = blockId(document, last.coordinate, last.ordinal, last.text)
 }
 
 /** Build stable, versioned blocks without changing any parser implementation. */
@@ -312,18 +482,32 @@ export async function buildDocumentBlocks(
   document: DocumentDescriptor,
   options: BlockBuildOptions
 ): Promise<DocumentBlock[]> {
+  if (!Number.isInteger(options.blockChars) || options.blockChars < 1) {
+    throw new Error('blockChars must be a positive integer')
+  }
+  if (!Number.isInteger(options.maxBlocks) || options.maxBlocks < 1) {
+    throw new Error('maxBlocks must be a positive integer')
+  }
   checkAborted(options.signal)
   const output: DocumentBlock[] = []
+  const state: BlockBuildState = { output, truncated: false, appendedSinceYield: 0 }
+  const sheetIndexes = new Map<string, number>()
   if (document.format === 'pdf') {
-    await pdfBlocks(bytes, document, output, options)
+    await pdfBlocks(bytes, document, state, options)
   } else if (document.format === 'pptx') {
-    await pptxBlocks(bytes, document, output, options)
+    await pptxBlocks(bytes, document, state, options)
   } else if (document.format === 'xlsx') {
-    await xlsxBlocks(bytes, document, output, options)
+    await xlsxBlocks(bytes, document, state, sheetIndexes, options)
   } else {
     const text = await parseDocument(bytes, document.format, { sheetRowLimit: 1 })
-    genericBlocks(text, document, output, options)
+    await genericBlocks(text, document, state, options)
   }
+  markTruncated(state, document, options.maxBlocks)
+  buildMetadata.set(output, {
+    truncated: state.truncated,
+    maxBlocks: options.maxBlocks,
+    sheetIndexes
+  })
   checkAborted(options.signal)
   return output
 }

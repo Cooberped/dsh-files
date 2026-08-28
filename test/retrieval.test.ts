@@ -3,13 +3,24 @@ import assert from 'node:assert/strict'
 import { chmod, mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { FsTargetKey, FsVersion } from '@deepseek-ai/dsh-fs'
-import { buildDocumentBlocks, type DocumentBlock, type DocumentDescriptor } from '../src/retrieval/blocks.ts'
+import {
+  buildDocumentBlocks,
+  documentBlockBuildMetadata,
+  formatWorksheetName,
+  INDEX_TRUNCATION_MARKER,
+  parseDocumentLocator,
+  parseWorkbookInventory,
+  retrievalDocumentVersion,
+  type DocumentBlock,
+  type DocumentDescriptor
+} from '../src/retrieval/blocks.ts'
 import { MemoryRetrievalBackend, SqliteRetrievalBackend, searchBackend, type RetrievalBackend } from '../src/retrieval/backend.ts'
 import { buildQueryPlan, containsTokenPhrase, tokenizeForIndex } from '../src/retrieval/tokenize.ts'
 import { createRetrievalBackend, probeRetrievalRuntime } from '../src/retrieval/runtime.ts'
-import { defineSearchDocumentsTool } from '../src/retrieval/tool.ts'
+import { defineSearchDocumentsTool, renderSearchDocumentsResult } from '../src/retrieval/tool.ts'
 
 test('Chinese bigrams preserve phrase order while ASCII-number tokens stay whole', () => {
   const plan = buildQueryPlan('流程绩效 Q3-IPD')
@@ -211,6 +222,160 @@ test('cooperative SQLite replacement yields and never exposes a partial index', 
 
 const fixtureDir = join(process.cwd(), 'benchmark', 'fixtures', 'generated')
 
+test('retrieval versions bind content to an explicit parser/block schema', () => {
+  const bytes = new TextEncoder().encode('stable content')
+  const current = retrievalDocumentVersion(bytes)
+  assert.match(current, /^retrieval-v2:[0-9a-f]{64}$/u)
+  assert.notEqual(current, retrievalDocumentVersion(bytes, 'retrieval-v1'))
+  assert.notEqual(current, retrievalDocumentVersion(new TextEncoder().encode('changed content')))
+})
+
+test('block limit degrades to an explicit cached truncation marker without exceeding the contract', async () => {
+  const bytes = new TextEncoder().encode(Array.from({ length: 20 }, (_, index) => `row-${index}-${'x'.repeat(20)}`).join('\n'))
+  const descriptor: DocumentDescriptor = {
+    id: 'limited',
+    path: '/synthetic/limited.txt',
+    format: 'text',
+    version: retrievalDocumentVersion(bytes)
+  }
+  const blocks = await buildDocumentBlocks(bytes, descriptor, { blockChars: 24, maxBlocks: 3 })
+  assert.equal(blocks.length, 3)
+  assert.equal(documentBlockBuildMetadata(blocks).truncated, true)
+  assert.match(blocks.at(-1)?.text ?? '', new RegExp(INDEX_TRUNCATION_MARKER))
+  assert.match(blocks.at(-1)?.text ?? '', /later document content is not searchable/)
+
+  const backend = new MemoryRetrievalBackend()
+  try {
+    backend.replaceDocument(descriptor, blocks, Date.now())
+    const marker = backend.search(buildQueryPlan(INDEX_TRUNCATION_MARKER), [descriptor.id], 1)
+    assert.equal(marker.length, 1, 'persisted blocks retain machine-detectable truncation state')
+    assert.equal(backend.documentVersion(descriptor.id), descriptor.version)
+  } finally {
+    backend.close()
+  }
+})
+
+test('XLSX coordinates quote spaces/apostrophes and inventory rejects line-breaking names explicitly', () => {
+  assert.equal(formatWorksheetName('指标总览'), '指标总览')
+  assert.equal(formatWorksheetName("O'Brien Plan"), "'O''Brien Plan'")
+  const locator = parseDocumentLocator("'O''Brien Plan'!A5:F5", new Map([["O'Brien Plan", 3]]))
+  assert.deepEqual(locator, {
+    kind: 'sheet',
+    sheet: "O'Brien Plan",
+    sheetIndex: 3,
+    cellRange: 'A5:F5'
+  })
+  assert.throws(
+    () => parseWorkbookInventory('### Workbook (1 sheets)\n1. Broken\nName — used A1:A1; 1 populated rows; 1 non-empty cells'),
+    /worksheet name.*line break/
+  )
+})
+
+test('zero-recall rendering gives retry, paging and no-guess guidance', () => {
+  const rendered = renderSearchDocumentsResult({
+    mode: 'search',
+    query: 'missing',
+    backend: 'js-memory',
+    indexedDocuments: 0,
+    documents: [],
+    truncatedDocuments: [],
+    results: []
+  })
+  assert.match(rendered, /Retry with shorter or different keywords/)
+  assert.match(rendered, /offset\/limit/)
+  assert.match(rendered, /Do not answer from assumptions/)
+})
+
+test('search_documents rebuilds a same-content index created by an older retrieval schema', async () => {
+  const bytes = new TextEncoder().encode('schema migration evidence')
+  const targetKey = 'target:doc.txt'
+  const id = createHash('sha256').update(targetKey).digest('hex')
+  const backend = new MemoryRetrievalBackend()
+  backend.replaceDocument({
+    id,
+    path: '/workspace/doc.txt',
+    format: 'text',
+    version: retrievalDocumentVersion(bytes, 'retrieval-v1')
+  }, [], Date.now())
+  const tool = defineSearchDocumentsTool({
+    fs: {
+      resolve: async () => ({ targetKey: FsTargetKey(targetKey), displayPath: '/workspace/doc.txt' }),
+      stat: async () => ({ version: FsVersion('fs-v1'), type: 'file', size: bytes.length }),
+      readBytes: async () => bytes
+    },
+    emit: () => undefined
+  }, {
+    maxFileBytes: 1024,
+    maxFiles: 2,
+    maxResults: 4,
+    blockChars: 128,
+    maxBlocksPerDocument: 8,
+    documentTtlMs: 1000,
+    queryLogTtlMs: 1000,
+    timeoutMs: 1000
+  }, Promise.resolve({
+    backend,
+    report: { nodeVersion: process.versions.node, backend: 'js-memory', phraseProbe: false }
+  }))
+  const exec = { signal: new AbortController().signal, agent: undefined } as unknown as Parameters<typeof tool.execute>[1]
+  try {
+    const result = await tool.execute({ file_paths: ['doc.txt'] }, exec) as {
+      indexedDocuments: number
+      documents: Array<{ version: string }>
+    }
+    assert.equal(result.indexedDocuments, 1)
+    assert.equal(result.documents[0].version, retrievalDocumentVersion(bytes))
+    assert.equal(backend.documentVersion(id), retrievalDocumentVersion(bytes))
+  } finally {
+    backend.close()
+  }
+})
+
+test('search_documents caches a truncated document version and reports the persisted block limit', async () => {
+  const bytes = new TextEncoder().encode(Array.from({ length: 12 }, (_, index) => `evidence-${index}`).join('\n'))
+  let reads = 0
+  const backend = new MemoryRetrievalBackend()
+  const tool = defineSearchDocumentsTool({
+    fs: {
+      resolve: async () => ({ targetKey: FsTargetKey('target:large.txt'), displayPath: '/workspace/large.txt' }),
+      stat: async () => ({ version: FsVersion('fs-v1'), type: 'file', size: bytes.length }),
+      readBytes: async () => {
+        reads += 1
+        return bytes
+      }
+    },
+    emit: () => undefined
+  }, {
+    maxFileBytes: 1024,
+    maxFiles: 2,
+    maxResults: 4,
+    blockChars: 12,
+    maxBlocksPerDocument: 2,
+    documentTtlMs: 1000,
+    queryLogTtlMs: 1000,
+    timeoutMs: 1000
+  }, Promise.resolve({
+    backend,
+    report: { nodeVersion: process.versions.node, backend: 'js-memory', phraseProbe: false }
+  }))
+  const exec = { signal: new AbortController().signal, agent: undefined } as unknown as Parameters<typeof tool.execute>[1]
+  try {
+    for (const expectedIndexed of [1, 0]) {
+      const result = await tool.execute({ file_paths: ['large.txt'] }, exec) as {
+        indexedDocuments: number
+        truncatedDocuments: Array<{ maxBlocks: number; version: string }>
+      }
+      assert.equal(result.indexedDocuments, expectedIndexed)
+      assert.equal(result.truncatedDocuments.length, 1)
+      assert.equal(result.truncatedDocuments[0].maxBlocks, 2)
+      assert.equal(result.truncatedDocuments[0].version, retrievalDocumentVersion(bytes))
+    }
+    assert.equal(reads, 1, 'truncated version is accepted as indexed and is not reparsed')
+  } finally {
+    backend.close()
+  }
+})
+
 async function descriptor(file: string, format: DocumentDescriptor['format'], id: string): Promise<{ bytes: Uint8Array; descriptor: DocumentDescriptor }> {
   const bytes = new Uint8Array(await readFile(join(fixtureDir, file)))
   return {
@@ -312,13 +477,27 @@ test('search_documents index mode returns a compact inventory before query retri
       mode: string
       backend: string
       indexedDocuments: number
-      results: Array<{ path: string; coordinate: string; text: string }>
+      truncatedDocuments: unknown[]
+      results: Array<{
+        path: string
+        coordinate: string
+        locator: { kind: string; page?: number; sheet?: string; sheetIndex?: number; cellRange?: string }
+        text: string
+      }>
     }
     assert.equal(first.mode, 'search')
     assert.equal(first.backend, 'js-memory')
     assert.equal(first.indexedDocuments, 0)
-    assert.ok(first.results.some((result) => result.path.endsWith('.pdf') && result.coordinate === 'page:2'))
-    assert.ok(first.results.some((result) => result.coordinate === '隐藏映射!A2:C2'))
+    assert.deepEqual(first.truncatedDocuments, [])
+    assert.ok(first.results.some((result) =>
+      result.path.endsWith('.pdf') && result.coordinate === 'page:2' && result.locator.page === 2
+    ))
+    assert.ok(first.results.some((result) =>
+      result.coordinate === '隐藏映射!A2:C2' &&
+      result.locator.sheet === '隐藏映射' &&
+      result.locator.sheetIndex === 3 &&
+      result.locator.cellRange === 'A2:C2'
+    ))
     const second = await tool.execute(searchArgs, exec) as { indexedDocuments: number }
     assert.equal(second.indexedDocuments, 0)
     assert.equal(readCount, 4, 'unchanged fs versions should not reread full file bytes')

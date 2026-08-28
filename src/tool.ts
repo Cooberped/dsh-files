@@ -9,8 +9,16 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { FsError, type FsTarget, type FsVersion } from '@deepseek-ai/dsh-fs'
 import { sniffFormat, sniffHead, HEAD_SNIFF_BYTES, SUPPORTED_FORMATS, formatFromExtension, type DocumentFormat } from './detect.ts'
 import { parseDocument, type ParseOptions } from './parse/index.ts'
+import { splitPdfPages } from './parse/pdf.ts'
 import { windowLines } from './parse/text.ts'
 import { ParseCache } from './cache.ts'
+import {
+  parseDocumentLocator,
+  parseWorkbookInventory,
+  retrievalDocumentVersion,
+  splitPptxSlides,
+  type DocumentLocator
+} from './retrieval/blocks.ts'
 
 function hashBytes(buf: Uint8Array | string): string {
   return createHash('sha256').update(typeof buf === 'string' ? buf : Buffer.from(buf)).digest('hex')
@@ -47,11 +55,14 @@ export interface ReadDocumentConfig {
 interface ParsedArgs {
   filePath: string
   offset: number
+  offsetExplicit: boolean
   limit: number
   format: 'auto' | DocumentFormat
   sheet?: number
   listSheets: boolean
   cellRange?: string
+  coordinate?: string
+  version?: string
 }
 
 function assertPositiveInteger(value: number, label: string): void {
@@ -63,6 +74,7 @@ function parseArgs(args: Record<string, unknown>, config: ReadDocumentConfig): P
     throw new Error('file_path must be a non-empty string')
   }
   const filePath = args.file_path.trim()
+  const offsetExplicit = args.offset !== undefined
   const offset = typeof args.offset === 'number' ? args.offset : 1
   if (!Number.isInteger(offset) || offset < 1) throw new Error('offset must be a positive integer')
   const limit = typeof args.limit === 'number' ? args.limit : config.readLimit
@@ -89,7 +101,30 @@ function parseArgs(args: Record<string, unknown>, config: ReadDocumentConfig): P
   if (listSheets && cellRange !== undefined) {
     throw new Error('list_sheets and cell_range are mutually exclusive')
   }
-  return { filePath, offset, limit, format: format as ParsedArgs['format'], sheet, listSheets, cellRange }
+  const coordinate = typeof args.coordinate === 'string' && args.coordinate.trim() !== ''
+    ? args.coordinate.trim().normalize('NFC')
+    : undefined
+  if (args.coordinate !== undefined && coordinate === undefined) throw new Error('coordinate must be a non-empty string when provided')
+  if (coordinate !== undefined && parseDocumentLocator(coordinate) === null) {
+    throw new Error(`unsupported coordinate ${JSON.stringify(coordinate)}; pass the value returned by search_documents unchanged`)
+  }
+  if (coordinate !== undefined && (sheet !== undefined || listSheets || cellRange !== undefined)) {
+    throw new Error('coordinate cannot be combined with sheet, list_sheets, or cell_range')
+  }
+  const version = typeof args.version === 'string' && args.version.trim() !== '' ? args.version.trim() : undefined
+  if (args.version !== undefined && version === undefined) throw new Error('version must be a non-empty string when provided')
+  return {
+    filePath,
+    offset,
+    offsetExplicit,
+    limit,
+    format: format as ParsedArgs['format'],
+    sheet,
+    listSheets,
+    cellRange,
+    coordinate,
+    version
+  }
 }
 
 /** The session workspace cwd for this call, when one applies. */
@@ -127,10 +162,65 @@ async function parseDocumentWithAbort(
   }
 }
 
-function renderContent(path: string, format: string, value: { offset: number; lines: Array<{ number: number; text: string }>; totalLines: number }): string {
+interface CoordinateScope {
+  text: string
+  offset: number
+  limit: number
+}
+
+function coordinateLineWindow(
+  text: string,
+  locator: Extract<DocumentLocator, { kind: 'line' | 'page' | 'slide' }>,
+  input: Pick<ParsedArgs, 'offset' | 'offsetExplicit' | 'limit' | 'coordinate'>
+): CoordinateScope {
+  const { startLine, endLine } = locator
+  if (startLine !== undefined && endLine !== undefined) {
+    if (input.offsetExplicit) throw new Error('offset cannot be combined with a coordinate that already contains a line range')
+    return { text, offset: startLine, limit: Math.min(input.limit, endLine - startLine + 1) }
+  }
+  return { text, offset: input.offset, limit: input.limit }
+}
+
+export function coordinateScope(
+  text: string,
+  format: DocumentFormat,
+  locator: DocumentLocator,
+  input: Pick<ParsedArgs, 'offset' | 'offsetExplicit' | 'limit' | 'coordinate'>
+): CoordinateScope {
+  if (locator.kind === 'page') {
+    if (format !== 'pdf') throw new Error(`coordinate ${JSON.stringify(input.coordinate)} requires a PDF, detected ${format}`)
+    const pages = splitPdfPages(text)
+    const page = pages[locator.page - 1]
+    if (page === undefined) throw new Error(`page ${locator.page} out of range: PDF has ${pages.length} page(s)`)
+    return coordinateLineWindow(page, locator, input)
+  }
+  if (locator.kind === 'slide') {
+    if (format !== 'pptx') throw new Error(`coordinate ${JSON.stringify(input.coordinate)} requires a PPTX, detected ${format}`)
+    const slides = splitPptxSlides(text)
+    const slide = slides.find((entry) => entry.slide === locator.slide)
+    if (slide === undefined) throw new Error(`slide ${locator.slide} out of range: PPTX has ${slides.length} slide(s)`)
+    return coordinateLineWindow(slide.text, locator, input)
+  }
+  if (locator.kind === 'line') {
+    if (format === 'xlsx') throw new Error(`coordinate ${JSON.stringify(input.coordinate)} is not an XLSX cell range`)
+    return coordinateLineWindow(text, locator, input)
+  }
+  if (format !== 'xlsx') throw new Error(`coordinate ${JSON.stringify(input.coordinate)} requires an XLSX workbook, detected ${format}`)
+  if (input.offsetExplicit) throw new Error('offset cannot be combined with an XLSX coordinate')
+  return { text, offset: 1, limit: input.limit }
+}
+
+function renderContent(path: string, format: string, value: {
+  offset: number
+  lines: Array<{ number: number; text: string }>
+  totalLines: number
+  version: string
+  coordinate?: string
+}): string {
   const numbered = format === 'text'
   const body = value.lines.map((l) => (numbered ? `${l.number}: ${l.text}` : l.text)).join('\n')
-  const header = `### document ${path} (${format}) — offset ${value.offset}, ${value.lines.length}/${value.totalLines} lines`
+  const scope = value.coordinate === undefined ? '' : ` @ ${value.coordinate}`
+  const header = `### document ${path} (${format})${scope} [version ${value.version}] — offset ${value.offset}, ${value.lines.length}/${value.totalLines} lines`
   return [header, body].filter((s) => s.length > 0).join('\n')
 }
 
@@ -145,7 +235,7 @@ export function defineReadDocumentTool(ctx: {
   return defineTool({
     name: 'read_document',
     description:
-      'Read text/PDF/DOCX/XLSX/PPTX without Python. PPTX preserves slide order and speaker notes. For XLSX, call list_sheets first, then select sheet and optionally cell_range (A1 notation). Results report detected value counts and truncation explicitly.',
+      'Read text/PDF/DOCX/XLSX/PPTX without Python. To expand search evidence, pass the coordinate and version returned by search_documents unchanged; page/slide-local line ranges and quoted XLSX Sheet!Range values are resolved precisely. Legacy offset/limit and sheet/cell_range calls remain supported. Results report detected value counts and truncation explicitly.',
     parameters: {
       file_path: {
         type: 'string',
@@ -156,6 +246,14 @@ export function defineReadDocumentTool(ctx: {
         type: 'string',
         enum: ['auto', 'pdf', 'docx', 'xlsx', 'pptx', 'text'],
         description: 'Optional format override; the sniffed content wins over this hint.'
+      },
+      coordinate: {
+        type: 'string',
+        description: 'Exact page/slide/line/Sheet!Range coordinate returned by search_documents. May be combined with offset only for a whole page:N or slide:N coordinate.'
+      },
+      version: {
+        type: 'string',
+        description: 'Exact retrieval version returned with the coordinate. If the file or projection schema changed, the call fails and must be re-searched.'
       },
       offset: {
         type: 'integer',
@@ -185,6 +283,8 @@ export function defineReadDocumentTool(ctx: {
         properties: {
           path: { type: 'string', required: true },
           format: { type: 'string', required: true, enum: ['pdf', 'docx', 'xlsx', 'pptx', 'text'] },
+          version: { type: 'string', required: true },
+          coordinate: { type: 'string' },
           offset: { type: 'integer', required: true },
           lines: {
             type: 'array',
@@ -215,6 +315,8 @@ export function defineReadDocumentTool(ctx: {
       presentationMeta: (_args, value) => ({
         path: value.path,
         format: value.format,
+        version: value.version,
+        ...(value.coordinate === undefined ? {} : { coordinate: value.coordinate }),
         offset: value.offset,
         totalLines: value.totalLines,
         lines: value.lines
@@ -275,6 +377,18 @@ export function defineReadDocumentTool(ctx: {
           'FS_NOT_TEXT'
         )
       }
+      const contentHash = hashBytes(bytes)
+      const version = retrievalDocumentVersion(bytes)
+      if (input.version !== undefined && input.version !== version) {
+        ctx.emit('fs/observed', target, { kind: 'present', version: info.version }, exec)
+        throw new Error(
+          `cannot expand coordinate for "${target.displayPath}": requested version ${input.version}, current version ${version}; rerun search_documents and use its new coordinate/version`
+        )
+      }
+      const locator = input.coordinate === undefined ? undefined : parseDocumentLocator(input.coordinate)
+      if (locator === null) {
+        throw new Error(`unsupported coordinate ${JSON.stringify(input.coordinate)}; rerun search_documents`)
+      }
       // sheet/list_sheets 只对 xlsx 有意义：对 PDF/DOCX/text 显式报错，
       // 防止模型以为 sheet 参数生效而拿到完整（未按 sheet 过滤）内容。
       if ((input.sheet !== undefined || input.listSheets || input.cellRange !== undefined) && format !== 'xlsx') {
@@ -284,13 +398,47 @@ export function defineReadDocumentTool(ctx: {
           'FS_NOT_TEXT'
         )
       }
+      let selectedSheet = input.sheet
+      let selectedCellRange = input.cellRange
+      let listSheets = input.listSheets
+      if (locator?.kind === 'sheet') {
+        if (format !== 'xlsx') {
+          throw new Error(`coordinate ${JSON.stringify(input.coordinate)} requires an XLSX workbook, detected ${format}`)
+        }
+        const inventory = await cache.getOrCompute({
+          targetKey: target.targetKey,
+          version: contentHash,
+          format,
+          listSheets: true
+        }, () => parseDocumentWithAbort(bytes, format, {
+          sheetRowLimit: config.sheetRowLimit,
+          maxSheets: config.maxSheets,
+          listOnly: true
+        }, exec.signal))
+        const sheets = parseWorkbookInventory(inventory)
+        const selected = sheets.find((sheet) => sheet.name === locator.sheet)
+        if (selected === undefined) {
+          throw new Error(
+            `worksheet ${JSON.stringify(locator.sheet)} from coordinate was not found; available sheets: ${sheets.map((sheet) => JSON.stringify(sheet.name)).join(', ')}`
+          )
+        }
+        selectedSheet = selected.index
+        selectedCellRange = locator.cellRange
+        listSheets = false
+      } else if (locator?.kind === 'page' && format !== 'pdf') {
+        throw new Error(`coordinate ${JSON.stringify(input.coordinate)} requires a PDF, detected ${format}`)
+      } else if (locator?.kind === 'slide' && format !== 'pptx') {
+        throw new Error(`coordinate ${JSON.stringify(input.coordinate)} requires a PPTX, detected ${format}`)
+      } else if (locator?.kind === 'line' && format === 'xlsx') {
+        throw new Error(`coordinate ${JSON.stringify(input.coordinate)} is not an XLSX cell range`)
+      }
       const cacheKey = {
         targetKey: target.targetKey,
-        version: hashBytes(bytes),
+        version: contentHash,
         format,
-        sheet: input.sheet,
-        listSheets: input.listSheets,
-        cellRange: input.cellRange
+        sheet: selectedSheet,
+        listSheets,
+        cellRange: selectedCellRange
       }
       // getOrCompute 自带 in-flight 去重：并发分页同一文件只解析一次。
       const text = await cache.getOrCompute(cacheKey, () =>
@@ -299,26 +447,33 @@ export function defineReadDocumentTool(ctx: {
         parseDocumentWithAbort(bytes, format, {
           sheetRowLimit: config.sheetRowLimit,
           maxSheets: config.maxSheets,
-          sheet: input.sheet,
-          listOnly: input.listSheets,
-          cellRange: input.cellRange
+          sheet: selectedSheet,
+          listOnly: listSheets,
+          cellRange: selectedCellRange
         }, exec.signal)
       )
-      const window = windowLines(text, input.offset, input.limit, formatOutputBudget(format, config.maxOutputChars))
+      const scope = locator === undefined
+        ? { text, offset: input.offset, limit: input.limit }
+        : coordinateScope(text, format, locator, input)
+      const window = windowLines(scope.text, scope.offset, scope.limit, formatOutputBudget(format, config.maxOutputChars))
       ctx.emit('fs/observed', target, { kind: 'present', version: info.version }, exec)
       return {
         path: target.displayPath,
         format,
-        offset: input.offset,
+        version,
+        ...(input.coordinate === undefined ? {} : { coordinate: input.coordinate }),
+        offset: scope.offset,
         lines: window.lines,
         totalLines: window.totalLines,
-        ...(input.sheet !== undefined ? { sheet: input.sheet } : {})
+        ...(selectedSheet !== undefined ? { sheet: selectedSheet } : {})
       }
     },
     presentCall(args) {
       return {
         card: 'generic',
-        title: `Read document ${args.file_path}`,
+        title: typeof args.coordinate === 'string'
+          ? `Read document ${args.file_path} @ ${args.coordinate}`
+          : `Read document ${args.file_path}`,
         kind: 'read',
         locations: [{ path: args.file_path }]
       }
@@ -327,7 +482,15 @@ export function defineReadDocumentTool(ctx: {
       if (result.isError) return undefined
       // meta 就是 presentationMeta 的投影产物（ToolResult.meta 原样透传）。
       const meta = result.meta as
-        | { path: string; format: string; offset: number; totalLines: number; lines: Array<{ number: number; text: string }> }
+        | {
+          path: string
+          format: string
+          version: string
+          coordinate?: string
+          offset: number
+          totalLines: number
+          lines: Array<{ number: number; text: string }>
+        }
         | undefined
       if (meta === undefined) return undefined
       if (meta.format === 'text') {

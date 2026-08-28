@@ -2,7 +2,17 @@ import { createHash } from 'node:crypto'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { FsError, type FsTarget, type FsVersion } from '@deepseek-ai/dsh-fs'
 import { formatFromExtension, HEAD_SNIFF_BYTES, sniffFormat, sniffHead, type DocumentFormat } from '../detect.ts'
-import { buildDocumentBlocks, type DocumentDescriptor } from './blocks.ts'
+import { parseDocument } from '../parse/index.ts'
+import {
+  buildDocumentBlocks,
+  documentBlockBuildMetadata,
+  INDEX_TRUNCATION_MARKER,
+  parseDocumentLocator,
+  parseWorkbookInventory,
+  retrievalDocumentVersion,
+  type DocumentDescriptor,
+  type DocumentLocator
+} from './blocks.ts'
 import { buildQueryPlan } from './tokenize.ts'
 import type { CreatedRetrievalBackend } from './runtime.ts'
 
@@ -35,6 +45,11 @@ interface ParsedSearchArgs {
 interface CachedSource {
   fsVersion: string
   descriptor: DocumentDescriptor
+}
+
+interface IndexedMetadata {
+  version: string
+  sheetIndexes: ReadonlyMap<string, number>
 }
 
 function parseArgs(args: Record<string, unknown>, config: SearchDocumentsConfig): ParsedSearchArgs {
@@ -145,7 +160,7 @@ async function readSource(
     id: hashBytes(targetKey),
     path: target.displayPath.normalize('NFC'),
     format,
-    version: hashBytes(bytes)
+    version: retrievalDocumentVersion(bytes)
   }
   sourceCache.delete(targetKey)
   sourceCache.set(targetKey, { fsVersion, descriptor })
@@ -169,39 +184,100 @@ async function bytesForIndex(
   signal: AbortSignal
 ): Promise<Uint8Array> {
   const bytes = source.bytes ?? await ctx.fs.readBytes(source.target, signal, config.maxFileBytes)
-  if (hashBytes(bytes) !== source.descriptor.version) {
+  if (retrievalDocumentVersion(bytes) !== source.descriptor.version) {
     throw new Error(`cannot index "${source.target.displayPath}": file changed while it was being indexed; retry the search`)
   }
   return bytes
 }
 
-function renderResults(value: {
+interface SearchResultLocator {
+  kind: DocumentLocator['kind'] | 'unknown'
+  page?: number
+  slide?: number
+  lineStart?: number
+  lineEnd?: number
+  sheet?: string
+  sheetIndex?: number
+  cellRange?: string
+  part?: number
+}
+
+interface SearchDocumentsValue {
   mode: 'index' | 'search'
   query: string
   backend: string
   indexedDocuments: number
   documents: Array<{ path: string; format: string; version: string }>
-  results: Array<{ path: string; format: string; version: string; coordinate: string; heading: string; text: string }>
-}): string {
+  truncatedDocuments: Array<{ path: string; version: string; maxBlocks: number }>
+  results: Array<{
+    path: string
+    format: string
+    version: string
+    coordinate: string
+    locator: SearchResultLocator
+    heading: string
+    text: string
+  }>
+}
+
+function locatorOutput(locator: DocumentLocator | null): SearchResultLocator {
+  if (locator === null) return { kind: 'unknown' }
+  if (locator.kind === 'page') {
+    return {
+      kind: locator.kind,
+      page: locator.page,
+      ...(locator.startLine === undefined ? {} : { lineStart: locator.startLine, lineEnd: locator.endLine })
+    }
+  }
+  if (locator.kind === 'slide') {
+    return {
+      kind: locator.kind,
+      slide: locator.slide,
+      ...(locator.startLine === undefined ? {} : { lineStart: locator.startLine, lineEnd: locator.endLine })
+    }
+  }
+  if (locator.kind === 'line') {
+    return { kind: locator.kind, lineStart: locator.startLine, lineEnd: locator.endLine }
+  }
+  return {
+    kind: locator.kind,
+    sheet: locator.sheet,
+    ...(locator.sheetIndex === undefined ? {} : { sheetIndex: locator.sheetIndex }),
+    cellRange: locator.cellRange,
+    ...(locator.part === undefined ? {} : { part: locator.part })
+  }
+}
+
+export function renderSearchDocumentsResult(value: SearchDocumentsValue): string {
+  const warnings = value.truncatedDocuments.map((document) =>
+    `WARNING: ${document.path} index was truncated at ${document.maxBlocks} blocks [version ${document.version}]. Later content may require read_document coordinate expansion or sequential paging.`
+  )
   if (value.mode === 'index') {
     const header = `### document index — ${value.documents.length} document(s); backend ${value.backend}; newly indexed ${value.indexedDocuments}`
     const documents = value.documents.map((document, index) =>
-      `${index + 1}. ${document.path} (${document.format}) [version ${document.version.slice(0, 12)}]`
+      `${index + 1}. ${document.path} (${document.format}) [version ${document.version}]`
     )
     return [
       header,
       ...documents,
+      ...warnings,
       'Index ready. No document body text was returned; use search_documents with a short query when the user asks a concrete question.'
     ].join('\n')
   }
   const header = `### document search — ${value.results.length} result(s); backend ${value.backend}; query ${JSON.stringify(value.query)}`
-  if (value.results.length === 0) return `${header}\nNo matching evidence found in the selected documents.`
+  if (value.results.length === 0) {
+    return [
+      header,
+      ...warnings,
+      'No matching evidence found in the selected documents. Retry with shorter or different keywords. If the fact should exist, use read_document with a known coordinate or page sequentially with offset/limit. Do not answer from assumptions when evidence is absent.'
+    ].join('\n')
+  }
   const parts = value.results.map((result, index) => [
-    `${index + 1}. ${result.path} (${result.format}) @ ${result.coordinate} [version ${result.version.slice(0, 12)}]`,
+    `${index + 1}. ${result.path} (${result.format}) @ ${result.coordinate} [version ${result.version}]`,
     result.heading,
     result.text
   ].filter((entry, entryIndex) => entryIndex === 0 || entry.trim() !== '').join('\n'))
-  return [header, ...parts].join('\n\n')
+  return [header, ...warnings, ...parts].join('\n\n')
 }
 
 /** Model-facing local retrieval tool. Parsing remains delegated to src/parse/*. */
@@ -212,12 +288,13 @@ export function defineSearchDocumentsTool(
 ) {
   const indexing = new Map<string, Promise<void>>()
   const sourceCache = new Map<string, CachedSource>()
+  const indexedMetadata = new Map<string, IndexedMetadata>()
   let lastGcAt = 0
 
   return defineTool({
     name: 'search_documents',
     description:
-      'Index or search selected PDF/DOCX/XLSX/PPTX/text files locally before reading long documents. Omit query when the user asks to first read, understand or prepare files without a concrete question: this builds the private index and returns only a compact inventory, not document body text. For a concrete question, pass a short keyword or exact phrase (omit question filler) to receive versioned page/line/Sheet!Range/slide evidence. Use read_document only to expand a returned coordinate; do not use Python or Bash for supported files.',
+      'Index or search selected PDF/DOCX/XLSX/PPTX/text files locally before reading long documents. Omit query when the user asks to first read, understand or prepare files without a concrete question: this builds the private index and returns only a compact inventory, not document body text. For a concrete question, pass a short keyword or exact phrase (omit question filler) to receive versioned page/line/Sheet!Range/slide evidence plus a machine locator. Expand evidence by passing the returned coordinate and version unchanged to read_document; do not use Python or Bash for supported files.',
     parameters: {
       file_paths: {
         type: 'array',
@@ -256,6 +333,19 @@ export function defineSearchDocumentsTool(
               }
             }
           },
+          truncatedDocuments: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                path: { type: 'string', required: true },
+                version: { type: 'string', required: true },
+                maxBlocks: { type: 'integer', required: true }
+              }
+            }
+          },
           results: {
             type: 'array',
             required: true,
@@ -267,6 +357,22 @@ export function defineSearchDocumentsTool(
                 format: { type: 'string', required: true, enum: ['pdf', 'docx', 'xlsx', 'pptx', 'text'] },
                 version: { type: 'string', required: true },
                 coordinate: { type: 'string', required: true },
+                locator: {
+                  type: 'object',
+                  required: true,
+                  additionalProperties: false,
+                  properties: {
+                    kind: { type: 'string', required: true, enum: ['page', 'slide', 'line', 'sheet', 'unknown'] },
+                    page: { type: 'integer' },
+                    slide: { type: 'integer' },
+                    lineStart: { type: 'integer' },
+                    lineEnd: { type: 'integer' },
+                    sheet: { type: 'string' },
+                    sheetIndex: { type: 'integer' },
+                    cellRange: { type: 'string' },
+                    part: { type: 'integer' }
+                  }
+                },
                 heading: { type: 'string', required: true },
                 text: { type: 'string', required: true },
                 score: { type: 'number', required: true }
@@ -275,7 +381,7 @@ export function defineSearchDocumentsTool(
           }
         }
       },
-      render: (_args, value) => [{ type: 'text', text: renderResults(value) }],
+      render: (_args, value) => [{ type: 'text', text: renderSearchDocumentsResult(value) }],
       presentationMeta: (_args, value) => value
     },
     isConcurrencySafe: () => true,
@@ -303,7 +409,12 @@ export function defineSearchDocumentsTool(
               maxBlocks: config.maxBlocksPerDocument,
               signal: exec.signal
             })
+            const metadata = documentBlockBuildMetadata(blocks)
             backend.replaceDocument(source.descriptor, blocks, Date.now())
+            indexedMetadata.set(source.descriptor.id, {
+              version: source.descriptor.version,
+              sheetIndexes: metadata.sheetIndexes
+            })
           })()
           indexing.set(source.descriptor.id, task)
           indexedDocuments += 1
@@ -323,6 +434,17 @@ export function defineSearchDocumentsTool(
         lastGcAt = now
       }
       const documents = sources.map((source) => source.descriptor)
+      const truncatedDocuments = documents.flatMap((document) => {
+        const hit = backend.search(buildQueryPlan(INDEX_TRUNCATION_MARKER), [document.id], 1)
+          .find((candidate) => candidate.text.includes(INDEX_TRUNCATION_MARKER))
+        if (hit === undefined) return []
+        const recordedLimit = /Index truncated at (\d+) blocks/u.exec(hit.text)
+        return [{
+          path: document.path,
+          version: document.version,
+          maxBlocks: recordedLimit === null ? config.maxBlocksPerDocument : Number(recordedLimit[1])
+        }]
+      })
       if (input.query === undefined) {
         return {
           mode: 'index' as const,
@@ -330,19 +452,41 @@ export function defineSearchDocumentsTool(
           backend: backend.kind,
           indexedDocuments,
           documents,
+          truncatedDocuments,
           results: []
         }
       }
       const plan = buildQueryPlan(input.query)
       const results = backend.search(plan, documentIds, input.limit)
       backend.logQuery(plan.normalizedQuery, documentIds, results.length, now)
+      const sourcesById = new Map(sources.map((source) => [source.descriptor.id, source]))
+      for (const result of results) {
+        if (result.format !== 'xlsx') continue
+        const known = indexedMetadata.get(result.documentId)
+        if (known?.version === result.version) continue
+        const source = sourcesById.get(result.documentId)
+        if (source === undefined) continue
+        const bytes = await bytesForIndex(ctx, source, config, exec.signal)
+        const inventory = await parseDocument(bytes, 'xlsx', { sheetRowLimit: 1, listOnly: true })
+        indexedMetadata.set(result.documentId, {
+          version: result.version,
+          sheetIndexes: new Map(parseWorkbookInventory(inventory).map((sheet) => [sheet.name, sheet.index]))
+        })
+      }
       return {
         mode: 'search' as const,
         query: plan.normalizedQuery,
         backend: backend.kind,
         indexedDocuments,
         documents,
-        results: results.map(({ documentId: _documentId, ...result }) => result)
+        truncatedDocuments,
+        results: results.map(({ documentId, ...result }) => ({
+          ...result,
+          locator: locatorOutput(parseDocumentLocator(
+            result.coordinate,
+            indexedMetadata.get(documentId)?.sheetIndexes
+          ))
+        }))
       }
     },
     presentCall(args) {
@@ -356,14 +500,14 @@ export function defineSearchDocumentsTool(
     },
     presentResult(_args, result) {
       if (result.isError) return undefined
-      const value = result.meta as Parameters<typeof renderResults>[0] | undefined
+      const value = result.meta as SearchDocumentsValue | undefined
       if (value === undefined) return undefined
       return {
         card: 'generic',
         title: value.mode === 'index'
           ? `Document index (${value.documents.length})`
           : `Document search (${value.results.length})`,
-        content: [{ type: 'text', text: renderResults(value) }]
+        content: [{ type: 'text', text: renderSearchDocumentsResult(value) }]
       }
     }
   })
