@@ -308,6 +308,7 @@ test('zero-recall rendering gives retry, paging and no-guess guidance', () => {
     mode: 'search',
     query: 'missing',
     backend: 'js-memory',
+    documentCount: 0,
     indexedDocuments: 0,
     documents: [],
     truncatedDocuments: [],
@@ -353,9 +354,11 @@ test('search_documents rebuilds a same-content index created by an older retriev
   try {
     const result = await tool.execute({ file_paths: ['doc.txt'] }, exec) as {
       indexedDocuments: number
+      documentCount: number
       documents: Array<{ version: string }>
     }
     assert.equal(result.indexedDocuments, 1)
+    assert.equal(result.documentCount, 1)
     assert.equal(result.documents[0].version, retrievalDocumentVersion(bytes))
     assert.equal(backend.documentVersion(id), retrievalDocumentVersion(bytes))
   } finally {
@@ -395,9 +398,11 @@ test('search_documents caches a truncated document version and reports the persi
     for (const expectedIndexed of [1, 0]) {
       const result = await tool.execute({ file_paths: ['large.txt'] }, exec) as {
         indexedDocuments: number
+        documentCount: number
         truncatedDocuments: Array<{ maxBlocks: number; version: string }>
       }
       assert.equal(result.indexedDocuments, expectedIndexed)
+      assert.equal(result.documentCount, 1)
       assert.equal(result.truncatedDocuments.length, 1)
       assert.equal(result.truncatedDocuments[0].maxBlocks, 2)
       assert.equal(result.truncatedDocuments[0].version, retrievalDocumentVersion(bytes))
@@ -501,6 +506,7 @@ test('search_documents index mode returns a compact inventory before query retri
       mode: string
       query: string
       backend: string
+      documentCount: number
       indexedDocuments: number
       backendNotice?: string
       documents: Array<{ path: string; format: string; version: string }>
@@ -510,6 +516,7 @@ test('search_documents index mode returns a compact inventory before query retri
     assert.equal(indexed.query, '')
     assert.equal(indexed.backend, 'js-memory')
     assert.equal(indexed.backendNotice, 'Non-persistent JS fallback active')
+    assert.equal(indexed.documentCount, 4)
     assert.equal(indexed.indexedDocuments, 4)
     assert.equal(indexed.documents.length, 4)
     assert.deepEqual(Object.keys(indexed.documents[0]).sort(), ['format', 'path', 'version'])
@@ -519,6 +526,7 @@ test('search_documents index mode returns a compact inventory before query retri
     const first = await tool.execute(searchArgs, exec) as {
       mode: string
       backend: string
+      documentCount: number
       indexedDocuments: number
       truncatedDocuments: unknown[]
       results: Array<{
@@ -530,6 +538,7 @@ test('search_documents index mode returns a compact inventory before query retri
     }
     assert.equal(first.mode, 'search')
     assert.equal(first.backend, 'js-memory')
+    assert.equal(first.documentCount, 4)
     assert.equal(first.indexedDocuments, 0)
     assert.deepEqual(first.truncatedDocuments, [])
     assert.ok(first.results.some((result) =>

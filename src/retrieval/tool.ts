@@ -213,6 +213,8 @@ interface SearchDocumentsValue {
   query: string
   backend: string
   backendNotice?: string
+  documentCount: number
+  /** Documents whose index was freshly rebuilt during this call, not total documents. */
   indexedDocuments: number
   documents: Array<{ path: string; format: string; version: string }>
   truncatedDocuments: Array<{ path: string; version: string; maxBlocks: number }>
@@ -330,7 +332,16 @@ export function defineSearchDocumentsTool(
           query: { type: 'string', required: true },
           backend: { type: 'string', required: true, enum: ['sqlite-fts5', 'js-memory'] },
           backendNotice: { type: 'string' },
-          indexedDocuments: { type: 'integer', required: true },
+          documentCount: {
+            type: 'integer',
+            required: true,
+            description: 'Total selected documents ready in the index. Use this for document count.'
+          },
+          indexedDocuments: {
+            type: 'integer',
+            required: true,
+            description: 'Documents freshly rebuilt during this call; cache hits make this 0. This is not the total document count.'
+          },
           documents: {
             type: 'array',
             required: true,
@@ -473,6 +484,7 @@ export function defineSearchDocumentsTool(
           query: '',
           backend: backend.kind,
           ...(backendNotice === undefined ? {} : { backendNotice }),
+          documentCount: documents.length,
           indexedDocuments,
           documents,
           truncatedDocuments,
@@ -503,6 +515,7 @@ export function defineSearchDocumentsTool(
         query: plan.normalizedQuery,
         backend: backend.kind,
         ...(backendNotice === undefined ? {} : { backendNotice }),
+        documentCount: documents.length,
         indexedDocuments,
         documents,
         truncatedDocuments,
