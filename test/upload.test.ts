@@ -8,7 +8,18 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { createUploadHandler, createSweeper, readHintFor, sanitizeFileName, sanitizeSessionId, sweep } from '../src/upload.ts'
+import {
+  createUploadHandler,
+  createSweeper,
+  DEFAULT_MAX_SESSION_BYTES,
+  isValidSessionId,
+  MAX_UPLOAD_RELATIVE_DEPTH,
+  readHintFor,
+  sanitizeFileName,
+  sanitizeSessionId,
+  sweep
+} from '../src/upload.ts'
+import { Config } from '../src/index.ts'
 
 test('sanitizeFileName strips control chars, separators, dot segments and leading dots', () => {
   assert.equal(sanitizeFileName('..\\..\\etc\\passwd'), 'etc_passwd')
@@ -26,10 +37,21 @@ test('sanitizeFileName stores Finder NFD names as NFC', () => {
   assert.equal(sanitizeFileName(nfd), nfc)
 })
 
-test('sanitizeSessionId keeps a safe alphabet', () => {
+test('sanitizeSessionId keeps safe ids stable and prevents lossy collisions', () => {
   assert.equal(sanitizeSessionId('session-12'), 'session-12')
-  assert.equal(sanitizeSessionId('../etc'), '_etc')
   assert.equal(sanitizeSessionId(''), 'anonymous')
+  assert.notEqual(sanitizeSessionId('a/b'), sanitizeSessionId('a:b'))
+  assert.match(sanitizeSessionId('../etc'), /^~etc-[0-9a-f]{32}$/)
+  const hashedKey = sanitizeSessionId('a/b')
+  assert.notEqual(sanitizeSessionId(hashedKey), hashedKey)
+  assert.equal(isValidSessionId('session-12'), true)
+  assert.equal(isValidSessionId('会话:12'), true)
+  assert.equal(isValidSessionId('bad\u0000id'), false)
+})
+
+test('session upload quota defaults to 512 MiB in the handler and plugin schema', () => {
+  assert.equal(DEFAULT_MAX_SESSION_BYTES, 512 * 1024 * 1024)
+  assert.equal(Config({}).maxUploadBytesPerSession, DEFAULT_MAX_SESSION_BYTES)
 })
 
 async function withServer(options: Parameters<typeof createUploadHandler>[0], fn: (base: string) => Promise<void>): Promise<void> {
@@ -149,6 +171,43 @@ test('unknown session is rejected when a session resolver exists', async () => {
   )
 })
 
+test('raw session ids are resolved exactly and collision-prone ids use separate storage keys', async () => {
+  const sessionDir = await mkdtemp(join(tmpdir(), 'dsh-files-session-collision-'))
+  const sessions = new Map([
+    ['a/b', sessionDir],
+    ['a:b', sessionDir]
+  ])
+  await withServer(
+    {
+      maxBytes: 1024 * 1024,
+      allowedExtensions: [],
+      ttlMs: 60_000,
+      sweepIntervalMs: 0,
+      maxConcurrent: 4,
+      defaultDir: await mkdtemp(join(tmpdir(), 'dsh-files-fallback-')),
+      sessionCwd: (id) => sessions.get(id)
+    },
+    async (base) => {
+      const upload = async (sessionId: string, body: string) => {
+        const res = await fetch(`${base}/api/upload`, {
+          method: 'POST',
+          headers: { 'x-file-name': encodeURIComponent('notes.txt'), 'x-session-id': sessionId },
+          body
+        })
+        assert.equal(res.status, 200)
+        return (await res.json()) as { path: string; sessionId: string }
+      }
+      const slash = await upload('a/b', 'slash')
+      const colon = await upload('a:b', 'colon')
+      assert.equal(slash.sessionId, 'a/b')
+      assert.equal(colon.sessionId, 'a:b')
+      assert.notEqual(slash.path.split('/')[1], colon.path.split('/')[1])
+      assert.ok(slash.path.includes(sanitizeSessionId('a/b')))
+      assert.ok(colon.path.includes(sanitizeSessionId('a:b')))
+    }
+  )
+})
+
 test('oversized upload is rejected', async () => {
   await withServer(
     {
@@ -187,6 +246,51 @@ test('extension allowlist rejects disallowed types', async () => {
   )
 })
 
+test('extension allowlist treats extensionless names as bin', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-files-extensionless-'))
+  await withServer(
+    {
+      maxBytes: 1024 * 1024,
+      allowedExtensions: ['bin'],
+      ttlMs: 60_000,
+      sweepIntervalMs: 0,
+      maxConcurrent: 4,
+      defaultDir: dir
+    },
+    async (base) => {
+      const accepted = await fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: { 'x-file-name': encodeURIComponent('README') },
+        body: 'plain text'
+      })
+      assert.equal(accepted.status, 200)
+    }
+  )
+})
+
+test('extension allowlist rejects metadata before persisting the body', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-files-allowlist-'))
+  await withServer(
+    {
+      maxBytes: 1024 * 1024,
+      allowedExtensions: ['pdf'],
+      ttlMs: 60_000,
+      sweepIntervalMs: 0,
+      maxConcurrent: 4,
+      defaultDir: dir
+    },
+    async (base) => {
+      const rejected = await fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: { 'x-file-name': encodeURIComponent('payload.exe') },
+        body: 'MZ'.repeat(4096)
+      })
+      assert.equal(rejected.status, 415)
+      await assert.rejects(readdir(join(dir, '.dsh-filess', 'anonymous')))
+    }
+  )
+})
+
 test('identical content deduplicates', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-files-fallback-'))
   await withServer(
@@ -208,6 +312,23 @@ test('identical content deduplicates', async () => {
       const b = (await second.json()) as { deduplicated?: boolean }
       assert.equal(a.deduplicated, undefined)
       assert.equal(b.deduplicated, true)
+    }
+  )
+})
+
+test('stored file names use a 64-bit content digest prefix', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-files-digest-'))
+  await withServer(
+    { maxBytes: 1024 * 1024, allowedExtensions: [], ttlMs: 60_000, sweepIntervalMs: 0, maxConcurrent: 4, defaultDir: dir },
+    async (base) => {
+      const res = await fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: { 'x-file-name': encodeURIComponent('evidence.txt') },
+        body: 'digest evidence'
+      })
+      assert.equal(res.status, 200)
+      const payload = (await res.json()) as { path: string }
+      assert.match(payload.path.split('/').at(-1) ?? '', /^[0-9a-f]{16}-evidence\.txt$/)
     }
   )
 })
@@ -276,6 +397,64 @@ test('DELETE removes an uploaded file', async () => {
       assert.equal(del.status, 200)
       const files = await readdir(join(sessionDir, '.dsh-filess', 's1'))
       assert.equal(files.length, 0)
+    }
+  )
+})
+
+test('DELETE cannot cross session upload directories even when sessions share one cwd', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'dsh-files-shared-workspace-'))
+  const sessions = new Map([
+    ['s1', workspace],
+    ['s2', workspace]
+  ])
+  await withServer(
+    { maxBytes: 1024 * 1024, allowedExtensions: [], ttlMs: 60_000, sweepIntervalMs: 0, maxConcurrent: 4, defaultDir: workspace, sessionCwd: (id) => sessions.get(id) },
+    async (base) => {
+      const up = await fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: { 'x-file-name': encodeURIComponent('private.txt'), 'x-session-id': 's1' },
+        body: 'private'
+      })
+      assert.equal(up.status, 200)
+      const { path } = (await up.json()) as { path: string }
+      const denied = await fetch(`${base}/api/upload?path=${encodeURIComponent(path)}`, {
+        method: 'DELETE',
+        headers: { 'x-session-id': 's2' }
+      })
+      assert.equal(denied.status, 403)
+      assert.equal((await stat(join(workspace, path))).isFile(), true)
+    }
+  )
+})
+
+test('folder upload rejects paths deeper than the bounded directory limit', async () => {
+  const sessionDir = await mkdtemp(join(tmpdir(), 'dsh-files-depth-'))
+  const sessions = new Map([['depth', sessionDir]])
+  await withServer(
+    { maxBytes: 1024 * 1024, allowedExtensions: [], ttlMs: 60_000, sweepIntervalMs: 0, maxConcurrent: 4, defaultDir: sessionDir, sessionCwd: (id) => sessions.get(id) },
+    async (base) => {
+      const rel = (depth: number) => [...Array.from({ length: depth }, (_, i) => `d${i}`), 'file.txt'].join('/')
+      const accepted = await fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: {
+          'x-file-name': encodeURIComponent('file.txt'),
+          'x-file-relative-path': encodeURIComponent(rel(MAX_UPLOAD_RELATIVE_DEPTH)),
+          'x-session-id': 'depth'
+        },
+        body: 'within limit'
+      })
+      assert.equal(accepted.status, 200)
+      const rejected = await fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: {
+          'x-file-name': encodeURIComponent('file.txt'),
+          'x-file-relative-path': encodeURIComponent(rel(MAX_UPLOAD_RELATIVE_DEPTH + 1)),
+          'x-session-id': 'depth'
+        },
+        body: 'too deep'
+      })
+      assert.equal(rejected.status, 400)
+      assert.match(((await rejected.json()) as { error: string }).error, /exceeds 16 directories/)
     }
   )
 })
@@ -395,6 +574,30 @@ test('session quota rejects oversize totals with 507', async () => {
       })
       assert.equal(over.status, 507)
       const files = await readdir(join(sessionDir, '.dsh-filess', 'q1'))
+      assert.equal(files.length, 1)
+    }
+  )
+})
+
+test('session quota serializes concurrent uploads so the total cannot overshoot', async () => {
+  const sessionDir = await mkdtemp(join(tmpdir(), 'dsh-files-session-quota-race-'))
+  const sessions = new Map([['q-race', sessionDir]])
+  await withServer(
+    { maxBytes: 1024 * 1024, allowedExtensions: [], ttlMs: 60_000, sweepIntervalMs: 0, maxConcurrent: 4, maxSessionBytes: 16, defaultDir: sessionDir, sessionCwd: (id) => sessions.get(id) },
+    async (base) => {
+      const send = (name: string, body: string) => fetch(`${base}/api/upload`, {
+        method: 'POST',
+        headers: { 'x-file-name': encodeURIComponent(name), 'x-session-id': 'q-race' },
+        body
+      })
+      const responses = await Promise.all([
+        send('a.txt', 'a'.repeat(10)),
+        send('b.txt', 'b'.repeat(10)),
+        send('c.txt', 'c'.repeat(10)),
+        send('d.txt', 'd'.repeat(10))
+      ])
+      assert.deepEqual(responses.map((response) => response.status).sort(), [200, 507, 507, 507])
+      const files = await readdir(join(sessionDir, '.dsh-filess', 'q-race'))
       assert.equal(files.length, 1)
     }
   )

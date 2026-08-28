@@ -1,9 +1,10 @@
 // Upload HTTP surface. Security model:
 //   - loopback-only host, same-origin and same-site checks (mirrors the
 //     official dsh-files-button contract)
-//   - files land in a per-session directory under the session's own cwd
-//     (`.dsh-filess/<sessionId>`), so the agent's fs backend can always
-//     resolve them and storage is isolated between sessions
+//   - files land in a path-contained per-session directory under the session's
+//     own cwd (`.dsh-filess/<storageKey>`), so the agent's fs backend can
+//     resolve them. Request authorization remains the Harness/deployment layer's
+//     responsibility; a storage key is not an authentication credential.
 //   - sanitized file names, size cap, optional extension allowlist, sha256
 //     content dedup, bounded concurrency, TTL sweep
 
@@ -25,11 +26,11 @@ export interface UploadOptions {
   sweepIntervalMs: number
   /** Concurrent upload bodies admitted at once. */
   maxConcurrent: number
-  /** Per-session storage byte quota; 0 disables the check. */
+  /** Per-session storage byte quota; defaults to 512 MiB; 0 explicitly disables the check. */
   maxSessionBytes?: number
   /**
    * Resolve a session id to its workspace cwd. When the resolver exists but
-   * returns undefined the request is rejected (unauthenticated session);
+   * returns undefined the request is rejected (unknown session);
    * when the resolver is absent (no sessions service injected) requests fall
    * back to `defaultDir`.
    */
@@ -42,6 +43,15 @@ export interface UploadOptions {
   trustedHosts?: string[]
   now?: () => number
 }
+
+/** Safe-by-default session storage budget. Callers may explicitly pass 0 to disable it. */
+export const DEFAULT_MAX_SESSION_BYTES = 512 * 1024 * 1024
+
+/** Folder uploads may preserve at most this many directory components. */
+export const MAX_UPLOAD_RELATIVE_DEPTH = 16
+
+const SAFE_SESSION_ID = /^[A-Za-z0-9_-]{1,80}$/
+const CONTENT_DIGEST_HEX_LENGTH = 16
 
 /**
  * Control chars, path separators, dot segments and leading dots stripped;
@@ -92,10 +102,27 @@ export function sanitizeFileName(raw: string): string {
   return name === '' ? 'upload.bin' : name
 }
 
-/** Session ids are opaque tokens; still constrain them to a safe alphabet. */
+/**
+ * Map an opaque session id to a filesystem-safe, collision-resistant key.
+ *
+ * Safe Harness ids remain byte-for-byte stable. Unsafe ids keep a readable
+ * prefix plus a hash of the ORIGINAL id, so `a/b` and `a:b` cannot collapse
+ * into the same upload directory. A leading `~` keeps hashed keys outside the
+ * safe raw-id alphabet, preventing a chosen safe id from colliding with the
+ * rendered hash key. The raw id is still passed unchanged to the Harness
+ * session resolver; this function is only for storage paths, not authorization.
+ */
 export function sanitizeSessionId(id: string): string {
-  const cleaned = id.replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 80)
-  return cleaned === '' ? 'anonymous' : cleaned
+  if (id === '') return 'anonymous'
+  if (SAFE_SESSION_ID.test(id)) return id
+  const digest = createHash('sha256').update(id).digest('hex').slice(0, 32)
+  const stem = id.replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 47)
+  return `~${stem === '' ? 'session' : stem}-${digest}`
+}
+
+/** Raw session ids are resolver credentials; reject controls/oversize, never lossy-normalize them. */
+export function isValidSessionId(id: string): boolean {
+  return id !== '' && !/[\u0000-\u001f\u007f]/.test(id)
 }
 
 /**
@@ -117,31 +144,35 @@ export function readHintFor(
 async function fileWithPrefixExists(dir: string, prefix: string): Promise<boolean> {
   try {
     const entries = await readdir(dir)
-    return entries.some((entry) => entry.startsWith(prefix))
+    return entries.some((entry) => entry.startsWith(`${prefix}-`))
   } catch {
     // dir not created yet — nothing stored
     return false
   }
 }
 
-/** Count regular-file payload bytes recursively without following symlinks. */
+/** Count regular-file payload bytes iteratively without following symlinks. */
 async function storedFileBytes(dir: string): Promise<number> {
-  let entries: string[]
-  try {
-    entries = await readdir(dir)
-  } catch {
-    return 0
-  }
   let total = 0
-  for (const entry of entries) {
-    const path = join(dir, entry)
+  const pending = [dir]
+  while (pending.length > 0) {
+    const current = pending.pop() as string
+    let entries: string[]
     try {
-      const info = await lstat(path)
-      if (info.isSymbolicLink()) continue
-      if (info.isDirectory()) total += await storedFileBytes(path)
-      else if (info.isFile()) total += info.size
+      entries = await readdir(current)
     } catch {
-      // raced with DELETE, sweep, or another upload
+      continue
+    }
+    for (const entry of entries) {
+      const path = join(current, entry)
+      try {
+        const info = await lstat(path)
+        if (info.isSymbolicLink()) continue
+        if (info.isDirectory()) pending.push(path)
+        else if (info.isFile()) total += info.size
+      } catch {
+        // raced with DELETE, sweep, or another upload
+      }
     }
   }
   return total
@@ -153,7 +184,7 @@ export function createUploadHandler(options: UploadOptions) {
     allowedExtensions,
     ttlMs,
     maxConcurrent,
-    maxSessionBytes = 0,
+    maxSessionBytes = DEFAULT_MAX_SESSION_BYTES,
     sessionCwd,
     defaultDir,
     onStorageRoot,
@@ -162,40 +193,125 @@ export function createUploadHandler(options: UploadOptions) {
   } = options
 
   let inflight = 0
+  const storageTails = new Map<string, Promise<void>>()
 
-  async function storageDirFor(req: IncomingMessage): Promise<{ dir: string; sessionId: string; workspaceRoot: string } | null> {
+  /** Serialize quota-check + persist inside one session so concurrent uploads cannot overshoot its budget. */
+  async function withStorageLock<T>(key: string, action: () => Promise<T>): Promise<T> {
+    const previous = storageTails.get(key) ?? Promise.resolve()
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolveGate) => {
+      release = resolveGate
+    })
+    const tail = previous.then(() => gate)
+    storageTails.set(key, tail)
+    await previous
+    try {
+      return await action()
+    } finally {
+      release()
+      if (storageTails.get(key) === tail) storageTails.delete(key)
+    }
+  }
+
+  type StorageLookup =
+    | { ok: true; dir: string; sessionId: string; workspaceRoot: string }
+    | { ok: false; status: 400 | 403; error: string }
+
+  async function storageDirFor(req: IncomingMessage): Promise<StorageLookup> {
     const raw = req.headers['x-session-id']
-    const sessionId = typeof raw === 'string' ? sanitizeSessionId(raw) : 'anonymous'
+    if (raw !== undefined && typeof raw !== 'string') {
+      return { ok: false, status: 400, error: 'invalid session id' }
+    }
+    // Preserve the direct-handler compatibility fallback. The real Harness
+    // client always supplies its current session id.
+    const sessionId = raw ?? 'anonymous'
+    if (!isValidSessionId(sessionId)) return { ok: false, status: 400, error: 'invalid session id' }
     if (sessionCwd !== undefined) {
       const cwd = await sessionCwd(sessionId)
-      if (cwd === undefined) return null
+      if (cwd === undefined) return { ok: false, status: 403, error: 'unknown session' }
       const workspaceRoot = resolve(cwd)
       onStorageRoot?.(workspaceRoot)
-      return { dir: join(workspaceRoot, '.dsh-filess', sessionId), sessionId, workspaceRoot }
+      return { ok: true, dir: join(workspaceRoot, '.dsh-filess', sanitizeSessionId(sessionId)), sessionId, workspaceRoot }
     }
     const workspaceRoot = resolve(defaultDir)
     onStorageRoot?.(workspaceRoot)
-    return { dir: join(workspaceRoot, '.dsh-filess', sessionId), sessionId, workspaceRoot }
+    return { ok: true, dir: join(workspaceRoot, '.dsh-filess', sanitizeSessionId(sessionId)), sessionId, workspaceRoot }
+  }
+
+  function uploadMetadata(req: IncomingMessage):
+    | { ok: true; name: string; ext: string; subDir: string }
+    | { ok: false; error: string } {
+    let rawName = 'upload.bin'
+    try {
+      const header = req.headers['x-file-name']
+      if (typeof header === 'string' && header !== '') rawName = decodeURIComponent(header)
+      else if (header !== undefined && typeof header !== 'string') return { ok: false, error: 'invalid file name' }
+    } catch {
+      return { ok: false, error: 'invalid file name' }
+    }
+    const name = sanitizeFileName(rawName)
+    const dot = name.lastIndexOf('.')
+    const ext = dot > 0 && dot < name.length - 1 ? name.slice(dot + 1).toLowerCase() : 'bin'
+
+    let subDir = ''
+    const relativeHeader = req.headers['x-file-relative-path']
+    if (relativeHeader !== undefined) {
+      if (typeof relativeHeader !== 'string') return { ok: false, error: 'invalid relative path' }
+      try {
+        const decoded = decodeURIComponent(relativeHeader)
+        const normalized = decoded.replace(/\\/g, '/').split('/').filter((s) => s !== '')
+        // webkitRelativePath includes the file name; the preceding segments
+        // are directories. Count raw segments (including dot segments) so a
+        // malicious header cannot hide arbitrary depth behind sanitization.
+        const directories = normalized.slice(0, -1)
+        if (directories.length > MAX_UPLOAD_RELATIVE_DEPTH) {
+          return { ok: false, error: `relative path exceeds ${MAX_UPLOAD_RELATIVE_DEPTH} directories` }
+        }
+        const safe = directories
+          .filter((s) => s !== '.' && s !== '..')
+          .map((s) => sanitizeFileName(s))
+          .filter((s) => s !== 'upload.bin' && s !== '')
+        subDir = safe.join('/')
+      } catch {
+        return { ok: false, error: 'invalid relative path' }
+      }
+    }
+    return { ok: true, name, ext, subDir }
   }
 
   async function handlePost(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // 限流检查必须与 inflight += 1 之间无 await（Node 单线程下原子），
     // 且要在 storageDirFor 之后——否则两个请求可同时通过检查。
     const storage = await storageDirFor(req)
-    if (storage === null) {
-      res.writeHead(403, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ error: 'unknown session' }))
+    if (!storage.ok) {
+      req.resume()
+      jsonError(res, storage.status, storage.error)
       return
     }
     if (inflight >= maxConcurrent) {
+      req.resume()
       res.writeHead(429, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: 'too many concurrent uploads' }))
       return
     }
     const declared = Number(req.headers['content-length'])
     if (Number.isFinite(declared) && declared > maxBytes) {
+      req.resume()
       res.writeHead(413, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: 'payload too large' }))
+      return
+    }
+    // Extension/depth validation is metadata-only and must happen before the
+    // request body is buffered. This keeps rejected binaries out of memory.
+    const metadata = uploadMetadata(req)
+    if (!metadata.ok) {
+      req.resume()
+      jsonError(res, 400, metadata.error)
+      return
+    }
+    if (allowedExtensions.length > 0 && !allowedExtensions.includes(metadata.ext)) {
+      req.resume()
+      jsonError(res, 415, `extension ".${metadata.ext}" not allowed`)
       return
     }
     inflight += 1
@@ -220,88 +336,61 @@ export function createUploadHandler(options: UploadOptions) {
         res.end(JSON.stringify({ error: 'empty upload' }))
         return
       }
-      let rawName = 'upload.bin'
-      try {
-        const header = String(req.headers['x-file-name'] ?? '')
-        if (header !== '') rawName = decodeURIComponent(header)
-      } catch {
-        // fall through to the default name
-      }
-      const name = sanitizeFileName(rawName)
-      const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase()
-      if (allowedExtensions.length > 0 && !allowedExtensions.includes(ext)) {
-        res.writeHead(415, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ error: `extension ".${ext}" not allowed` }))
-        return
-      }
+      const { name, subDir } = metadata
       const data = Buffer.concat(chunks)
-      // 会话配额必须递归统计文件夹上传内容；目录 inode 的 stat.size 既不是
-      // 文件内容大小，也会因文件系统而异。符号链接不跟随，避免越出上传树。
-      // 检查放在 inflight 内，两个并发请求仍可能同时通过（低风险，TTL 会回收）。
-      if (maxSessionBytes > 0) {
-        const used = await storedFileBytes(storage.dir)
-        if (used + data.length > maxSessionBytes) {
-          res.writeHead(507, { 'content-type': 'application/json' })
-          res.end(JSON.stringify({ error: `session upload quota exceeded (${maxSessionBytes} bytes)` }))
-          return
-        }
-      }
-      await mkdir(storage.dir, { recursive: true })
-      const digest = createHash('sha256').update(data).digest('hex').slice(0, 12)
+      const digest = createHash('sha256').update(data).digest('hex').slice(0, CONTENT_DIGEST_HEX_LENGTH)
       // 文件夹上传保留子目录层级：x-file-relative-path 里的目录前缀重建在
       // 会话上传目录内（如 sub/dir/file.pdf → <session>/.dsh-filess/<sid>/sub/dir/<digest>-file.pdf）。
-      // 相对路径已按 POSIX 解析并去段，拒绝 ../ 与绝对路径。
-      let subDir = ''
-      try {
-        const rel = String(req.headers['x-file-relative-path'] ?? '')
-        if (rel !== '') {
-          const decoded = decodeURIComponent(rel)
-          const normalized = decoded.replace(/\\/g, '/').split('/').filter((s) => s !== '' && s !== '.' && s !== '..')
-          // webkitRelativePath includes the file name; only its directory
-          // prefix belongs in subDir. Including the last segment would create
-          // a directory named `report.xlsx` and hide the actual file below it.
-          if (normalized.length > 1) {
-            const safe = normalized.slice(0, -1).map((s) => sanitizeFileName(s)).filter((s) => s !== 'upload.bin' && s !== '')
-            subDir = safe.join('/')
-          }
-        }
-      } catch {
-        // 非法相对路径：忽略，平铺到会话根
-      }
+      // 相对路径已按 POSIX 解析、限深并去除 dot 段，始终限制在会话目录内。
       const dirWithSub = subDir === '' ? storage.dir : join(storage.dir, subDir)
-      await mkdir(dirWithSub, { recursive: true })
       const dest = join(dirWithSub, `${digest}-${name}`)
-      let deduplicated = false
-      // 去重键是内容 digest：同内容不同名只存一份。writeFile 的 wx 旗标
-      // 只对同名生效，所以先按 digest 前缀找已存在的同内容文件，
-      // 命中时返回已存在文件的真实路径（模型读它不会 404）。
-      let path = dest
-      if (!(await fileWithPrefixExists(dirWithSub, digest))) {
-        try {
-          await writeFile(dest, data, { flag: 'wx' })
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException)?.code === 'EEXIST') deduplicated = true
-          else throw err
+      const persisted = await withStorageLock(storage.dir, async () => {
+        // 会话配额递归统计文件夹上传内容；目录 inode 的 stat.size 不是
+        // payload。符号链接不跟随，且同一会话检查与写入串行，避免并发超额。
+        if (maxSessionBytes > 0) {
+          const used = await storedFileBytes(storage.dir)
+          if (used + data.length > maxSessionBytes) return null
         }
-      } else {
-        deduplicated = true
-        const entries = await readdir(dirWithSub)
-        const existing = entries.find((entry) => entry.startsWith(digest))
-        // 竞态保护：sweep 可能在 find 前一瞬删掉这个同 digest 文件，此时
-        // existing 为 undefined，返回一个不存在的路径会让模型读取 404。
-        // 回退为直接写入（wx 保原子）；EEXIST 则重新判定为去重成功。
-        if (existing !== undefined) {
-          path = join(dirWithSub, existing)
-        } else {
-          deduplicated = false
+        await mkdir(dirWithSub, { recursive: true })
+        let deduplicated = false
+        // 去重键是内容 digest：同内容不同名只存一份。writeFile 的 wx 旗标
+        // 只对同名生效，所以先按 digest 前缀找已存在的同内容文件，
+        // 命中时返回已存在文件的真实路径（模型读它不会 404）。
+        let path = dest
+        if (!(await fileWithPrefixExists(dirWithSub, digest))) {
           try {
             await writeFile(dest, data, { flag: 'wx' })
           } catch (err) {
             if ((err as NodeJS.ErrnoException)?.code === 'EEXIST') deduplicated = true
             else throw err
           }
+        } else {
+          deduplicated = true
+          const entries = await readdir(dirWithSub)
+          const existing = entries.find((entry) => entry.startsWith(`${digest}-`))
+          // 竞态保护：sweep 可能在 find 前一瞬删掉这个同 digest 文件，此时
+          // existing 为 undefined，返回一个不存在的路径会让模型读取 404。
+          // 回退为直接写入（wx 保原子）；EEXIST 则重新判定为去重成功。
+          if (existing !== undefined) {
+            path = join(dirWithSub, existing)
+          } else {
+            deduplicated = false
+            try {
+              await writeFile(dest, data, { flag: 'wx' })
+            } catch (err) {
+              if ((err as NodeJS.ErrnoException)?.code === 'EEXIST') deduplicated = true
+              else throw err
+            }
+          }
         }
+        return { path, deduplicated }
+      })
+      if (persisted === null) {
+        res.writeHead(507, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: `session upload quota exceeded (${maxSessionBytes} bytes)` }))
+        return
       }
+      const { path, deduplicated } = persisted
       // 嗅探前移：上传时字节已在内存，顺手判定真实格式（不信任扩展名），
       // 客户端据此显示真实格式徽章，伪装文件一上传就暴露。
       const sniffedFormat = sniffFormat(data)
@@ -332,9 +421,8 @@ export function createUploadHandler(options: UploadOptions) {
 
   async function handleDelete(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const storage = await storageDirFor(req)
-    if (storage === null) {
-      res.writeHead(403, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ error: 'unknown session' }))
+    if (!storage.ok) {
+      jsonError(res, storage.status, storage.error)
       return
     }
     const url = new URL(req.url ?? '', 'http://localhost')

@@ -12,7 +12,7 @@ import z from '@deepseek-ai/schemastery'
 import { defineReadDocumentTool } from './tool.ts'
 import { defineSearchDocumentsTool } from './retrieval/tool.ts'
 import { createRetrievalBackend } from './retrieval/runtime.ts'
-import { createUploadHandler, createSweeper } from './upload.ts'
+import { createUploadHandler, createSweeper, DEFAULT_MAX_SESSION_BYTES } from './upload.ts'
 import { createWorkspaceFilesHandler, DEFAULT_IGNORED_DIRS, DEFAULT_IGNORED_EXTENSIONS, DEFAULT_IGNORED_FILES } from './workspace.ts'
 import { ParseCache } from './cache.ts'
 import { parseHost } from './guard.ts'
@@ -89,8 +89,8 @@ export const Config = z.object({
   sweepIntervalMs: z.number().default(60 * 60 * 1000),
   /** Concurrent upload bodies admitted at once. */
   maxConcurrentUploads: z.number().default(4),
-  /** Per-session storage byte quota; 0 disables the check. */
-  maxUploadBytesPerSession: z.number().default(0),
+  /** Per-session storage byte quota; defaults to 512 MiB; 0 explicitly disables the check. */
+  maxUploadBytesPerSession: z.number().default(DEFAULT_MAX_SESSION_BYTES),
   /** Upload storage root; files land in <root>/.dsh-filess/<sessionId>/. */
   uploadDir: z.string().default(join(process.cwd(), 'uploads')),
   readTimeoutMs: z.number().default(120_000),

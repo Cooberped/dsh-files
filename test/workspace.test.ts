@@ -86,3 +86,34 @@ test('workspace files handler returns 405 for non-GET and 403 for unknown sessio
     server.close()
   }
 })
+
+test('workspace handler resolves raw session ids exactly instead of lossy normalization', async () => {
+  const root = await withTree({ 'secret.txt': 'secret' })
+  const seen: string[] = []
+  const handler = createWorkspaceFilesHandler({
+    sessionCwd: async (id) => {
+      seen.push(id)
+      return id === 'a_b' ? root : undefined
+    }
+  })
+  const server = createServer((req, res) => {
+    void handler(req as IncomingMessage, res as ServerResponse)
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+  try {
+    const collision = await fetch(`${base}/api/workspace-files?session=${encodeURIComponent('a:b')}`, {
+      headers: { host: '127.0.0.1', 'sec-fetch-site': 'same-origin' }
+    })
+    assert.equal(collision.status, 403)
+    assert.deepEqual(seen, ['a:b'])
+
+    const invalid = await fetch(`${base}/api/workspace-files?session=${encodeURIComponent('bad\u0000id')}`, {
+      headers: { host: '127.0.0.1', 'sec-fetch-site': 'same-origin' }
+    })
+    assert.equal(invalid.status, 400)
+    assert.deepEqual(seen, ['a:b'])
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())))
+  }
+})

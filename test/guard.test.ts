@@ -7,17 +7,29 @@ import assert from 'node:assert/strict'
 import type { IncomingMessage } from 'node:http'
 import { networkGuard, parseHost } from '../src/guard.ts'
 
-function req(host: string | undefined, origin?: string, secFetchSite?: string): IncomingMessage {
+function req(host: string | undefined, origin?: string, secFetchSite?: string, remoteAddress?: string): IncomingMessage {
   const headers: Record<string, string> = {}
   if (host !== undefined) headers.host = host
   if (origin !== undefined) headers.origin = origin
   if (secFetchSite !== undefined) headers['sec-fetch-site'] = secFetchSite
   // 明文 socket：TLS 在上游终结时 dsh 进程看到的是 http。
-  return { headers, socket: {} } as unknown as IncomingMessage
+  return { headers, socket: remoteAddress === undefined ? {} : { remoteAddress } } as unknown as IncomingMessage
 }
 
 test('loopback hosts pass with the default empty trustedHosts', () => {
-  for (const host of ['127.0.0.1', '127.0.0.1:3080', 'localhost', 'localhost:3080', '[::1]:3080', '[::1]']) {
+  for (const host of [
+    '127.0.0.1',
+    '127.0.0.1:3080',
+    '127.0.0.2',
+    '127.255.255.254:3080',
+    '127.1',
+    'localhost',
+    'localhost:3080',
+    '[::1]:3080',
+    '[::1]',
+    '[::ffff:127.0.0.1]:3080',
+    '[::ffff:127.255.255.254]'
+  ]) {
     assert.equal(networkGuard(req(host)), null, host)
   }
 })
@@ -25,6 +37,15 @@ test('loopback hosts pass with the default empty trustedHosts', () => {
 test('non-loopback host is rejected without trustedHosts', () => {
   assert.equal(networkGuard(req('dsh.example.com')), 'forbidden: non-loopback host')
   assert.equal(networkGuard(req('192.168.1.10:3080')), 'forbidden: non-loopback host')
+  assert.equal(networkGuard(req('[::ffff:192.168.1.10]:3080')), 'forbidden: non-loopback host')
+})
+
+test('a forged loopback Host cannot authorize a non-loopback socket peer', () => {
+  assert.equal(networkGuard(req('127.0.0.1:3080', undefined, undefined, '192.168.1.10')), 'forbidden: non-loopback peer')
+  assert.equal(networkGuard(req('localhost:3080', undefined, undefined, '::ffff:192.168.1.10')), 'forbidden: non-loopback peer')
+  assert.equal(networkGuard(req('localhost:3080', undefined, undefined, '::ffff:127.0.0.1')), null)
+  // An explicit trusted host is the deliberate reverse-proxy path.
+  assert.equal(networkGuard(req('dsh.example.com', 'https://dsh.example.com', 'same-origin', '192.168.1.10'), ['dsh.example.com']), null)
 })
 
 test('bare trusted host matches any port', () => {
