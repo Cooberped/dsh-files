@@ -7,10 +7,10 @@
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0l10 5-10 5z" fill="#6d879d"/></marker>
   </defs>
   <rect width="1440" height="720" rx="32" fill="url(#bg)"/>
-  <text x="72" y="72" fill="#f8fbff" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="34" font-weight="760">Small package. Four layers. One evidence loop.</text>
-  <text x="72" y="106" fill="#8fa5b8" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17">The plugin keeps parsing and retrieval local; only selected tool evidence enters the model context.</text>
+  <text x="72" y="72" fill="#f8fbff" font-family="Inter, &quot;PingFang SC&quot;, &quot;Hiragino Sans GB&quot;, &quot;Microsoft YaHei&quot;, &quot;Noto Sans CJK SC&quot;, &quot;Source Han Sans SC&quot;, ui-sans-serif, system-ui, sans-serif" font-size="34" font-weight="760">Small package. Four layers. One evidence loop.</text>
+  <text x="72" y="106" fill="#8fa5b8" font-family="Inter, &quot;PingFang SC&quot;, &quot;Hiragino Sans GB&quot;, &quot;Microsoft YaHei&quot;, &quot;Noto Sans CJK SC&quot;, &quot;Source Han Sans SC&quot;, ui-sans-serif, system-ui, sans-serif" font-size="17">The plugin keeps parsing and retrieval local; only selected tool evidence enters the model context.</text>
 
-  <g transform="translate(72 160)" font-family="Inter, ui-sans-serif, system-ui, sans-serif" filter="url(#shadow)">
+  <g transform="translate(72 160)" font-family="Inter, &quot;PingFang SC&quot;, &quot;Hiragino Sans GB&quot;, &quot;Microsoft YaHei&quot;, &quot;Noto Sans CJK SC&quot;, &quot;Source Han Sans SC&quot;, ui-sans-serif, system-ui, sans-serif" filter="url(#shadow)">
     <g>
       <rect width="275" height="330" rx="22" fill="#101f31" stroke="#34516b"/>
       <circle cx="34" cy="37" r="16" fill="#f3c66b"/><text x="29" y="43" fill="#17202b" font-size="16" font-weight="800">1</text>
@@ -45,7 +45,7 @@
       <g transform="translate(24 116)">
         <rect width="227" height="48" rx="12" fill="#1d2946"/><text x="18" y="30" fill="#e0e7ff" font-size="15">Ordered CJK bigrams</text>
         <rect y="60" width="227" height="48" rx="12" fill="#1d2946"/><text x="18" y="90" fill="#e0e7ff" font-size="15">SQLite FTS5 probe</text>
-        <rect y="120" width="227" height="48" rx="12" fill="#1d2946"/><text x="18" y="150" fill="#e0e7ff" font-size="15">Zero-dependency JS fallback</text>
+        <rect y="120" width="227" height="48" rx="12" fill="#1d2946"/><text x="18" y="150" fill="#e0e7ff" font-size="15">Dependency-free fallback</text>
       </g>
       <text x="24" y="305" fill="#9eb1ff" font-size="13" font-weight="700">QUERY LOGGING OFF BY DEFAULT</text>
     </g>
@@ -60,22 +60,22 @@
         <rect y="60" width="227" height="48" rx="12" fill="#332325"/><text x="18" y="90" fill="#ffe8e2" font-size="15">read_document</text>
         <rect y="120" width="227" height="48" rx="12" fill="#332325"/><text x="18" y="150" fill="#ffe8e2" font-size="15">Versioned coordinate check</text>
       </g>
-      <text x="24" y="305" fill="#ff9c88" font-size="13" font-weight="700">EXPLICIT TRUNCATION + BOUNDARIES</text>
+      <text x="24" y="305" fill="#ff9c88" font-size="13" font-weight="700">EXPLICIT TRUNCATION + LIMITS</text>
     </g>
   </g>
 
-  <path d="M347 325h45" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
-  <path d="M677 325h45" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
-  <path d="M1007 325h45" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M377 325h45" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M707 325h45" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M1037 325h45" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
 
-  <g transform="translate(72 545)" font-family="Inter, ui-sans-serif, system-ui, sans-serif">
+  <g transform="translate(72 545)" font-family="Inter, &quot;PingFang SC&quot;, &quot;Hiragino Sans GB&quot;, &quot;Microsoft YaHei&quot;, &quot;Noto Sans CJK SC&quot;, &quot;Source Han Sans SC&quot;, ui-sans-serif, system-ui, sans-serif">
     <rect width="1265" height="106" rx="20" fill="#132234" stroke="#304b64"/>
-    <rect x="24" y="24" width="118" height="58" rx="14" fill="#2c2020"/><text x="48" y="59" fill="#ff9c88" font-size="15" font-weight="700">IMAGES</text>
-    <path d="M158 53h76" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
-    <rect x="250" y="24" width="250" height="58" rx="14" fill="#172b40"/><text x="278" y="59" fill="#d8e5ef" font-size="15">Harness native attachment rail</text>
-    <path d="M516 53h76" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
-    <rect x="608" y="24" width="242" height="58" rx="14" fill="#172b40"/><text x="638" y="59" fill="#d8e5ef" font-size="15">Provider-neutral image_url</text>
-    <path d="M866 53h76" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
-    <rect x="958" y="24" width="281" height="58" rx="14" fill="#173529"/><text x="991" y="59" fill="#d9f1e7" font-size="15">Any declared vision-capable model</text>
+    <rect x="24" y="24" width="120" height="58" rx="14" fill="#2c2020"/><text x="54" y="59" fill="#ff9c88" font-size="15" font-weight="700">IMAGES</text>
+    <path d="M148 53h76" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="228" y="24" width="279" height="58" rx="14" fill="#172b40"/><text x="258" y="59" fill="#d8e5ef" font-size="15">Harness native attachment rail</text>
+    <path d="M512 53h76" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="592" y="24" width="252" height="58" rx="14" fill="#172b40"/><text x="622" y="59" fill="#d8e5ef" font-size="15">Provider-neutral image_url</text>
+    <path d="M848 53h76" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="928" y="24" width="313" height="58" rx="14" fill="#173529"/><text x="958" y="59" fill="#d9f1e7" font-size="15">Any declared vision-capable model</text>
   </g>
 </svg>
