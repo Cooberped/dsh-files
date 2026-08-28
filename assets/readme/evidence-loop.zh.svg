@@ -55,7 +55,7 @@
       <text x="24" y="213" fill="#697d8e" font-size="13">或直说材料里没有证据。</text>
     </g>
   </g>
-  <path d="M320 293h78" stroke="#8094a8" stroke-width="3" marker-end="url(#arrow)"/>
-  <path d="M650 293h78" stroke="#8094a8" stroke-width="3" marker-end="url(#arrow)"/>
-  <path d="M980 293h78" stroke="#8094a8" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M390 293h78" stroke="#8094a8" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M720 293h78" stroke="#8094a8" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M1050 293h78" stroke="#8094a8" stroke-width="3" marker-end="url(#arrow)"/>
 </svg>

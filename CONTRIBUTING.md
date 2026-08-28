@@ -50,6 +50,13 @@ Generated `lib/` files are tracked. If you change `src/`, run `pnpm build` and
 include the matching generated output in the same pull request. Do not hand-edit
 generated files.
 
+Files in `assets/readme/` are generated from `assets/source/` by
+`pnpm assets:build`; `pnpm assets:check` runs in the release gate. Change a
+diagram by editing its source and rebuilding, never by hand-editing the SVG.
+
+`assets/readme/` 下的文件由 `assets/source/` 经 `pnpm assets:build` 生成，
+`pnpm assets:check` 已接入发布 Gate。修改配图请改源码后重新生成，不要手改 SVG。
+
 `README.md` and `README.zh.md` are a translated pair. When you edit one side,
 bring the other along in the same pull request and re-record both blob hashes in
 [`.github/readme-i18n.yaml`](.github/readme-i18n.yaml) with `git hash-object`.

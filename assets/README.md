@@ -27,6 +27,12 @@ The `*.zh.svg` files are Simplified-Chinese counterparts of the three English
 diagrams: identical geometry and palette, translated copy, label boxes
 recomputed for CJK glyph width, and a CJK font-family fallback list.
 
+Every file in `readme/` is **generated** from `assets/source/` by
+`pnpm assets:build`, and `pnpm assets:check` (part of the release gate) fails if
+a tracked file no longer matches its source. Edit the copy in
+`assets/source/content.mjs` and the geometry in the three renderer modules — do
+not hand-edit the SVGs, and update the hashes below after rebuilding.
+
 当前素材均于 2026-08-28 以确定性 SVG 代码直接为本仓库创建。文件不嵌入外部图片、
 字体文件、Logo、第三方作品、截图、用户文档、模型输出、凭据、私有路径、个人信息或
 隐藏元数据；`font-family` 只是系统字体回退声明，并未打包字体软件。
@@ -34,14 +40,19 @@ recomputed for CJK glyph width, and a CJK font-family fallback list.
 `*.zh.svg` 是三张英文图的简体中文版：几何与配色完全一致，文案为翻译版本，标签框
 宽度按中文字宽重算，并补充了 CJK font-family 回退列表。
 
+`readme/` 下的每个文件都由 `assets/source/` 经 `pnpm assets:build` **生成**；
+`pnpm assets:check`（发布 Gate 的一环）会在提交的文件与源不一致时失败。请修改
+`assets/source/content.mjs` 中的文案与三个渲染模块中的几何，不要手改 SVG；
+重新生成后同步更新下方哈希。
+
 | Asset | SHA-256 | Purpose | License/status |
 | --- | --- | --- | --- |
-| `readme/hero.svg` | `40216c2aea8ec85aa8cbfd00d0621b69e60929f40c0037f48706bdb482f3e852` | Project identity and four-capability overview | Repository-original SVG; contributed under MIT; `CONFIRMED` |
-| `readme/architecture.svg` | `f78a71239c37320af50549449862eab312b130c9ccbc21395ff5f925f7f10595` | Composer → local ingest → private retrieval → model tools, plus native vision branch | Repository-original SVG; contributed under MIT; `CONFIRMED` |
-| `readme/evidence-loop.svg` | `4df0cd67ac480bf275ed3a07bc1a3a7d21575a01193e6b2f0dcbdcdfb95dedd5` | Inventory → retrieve → expand → answer workflow | Repository-original SVG; contributed under MIT; `CONFIRMED` |
-| `readme/hero.zh.svg` | `65979efc25efc47b3433326140b8f8d7d96dd93aefa46eb27fa333c1fcf33f45` | Simplified-Chinese hero for `README.zh.md` | Repository-original SVG; contributed under MIT; `CONFIRMED` |
-| `readme/architecture.zh.svg` | `7d60d91b1ee1c080d505514cd8f9a440b1ad5b526b725308196a2b7e44f9dea8` | Simplified-Chinese architecture diagram for `README.zh.md` | Repository-original SVG; contributed under MIT; `CONFIRMED` |
-| `readme/evidence-loop.zh.svg` | `cbcdfd4b4d6e5850016f226554dea38b03fa7c81a9ed34ba2e00abc6191f3343` | Simplified-Chinese evidence-loop diagram for `README.zh.md` | Repository-original SVG; contributed under MIT; `CONFIRMED` |
+| `readme/hero.svg` | `de50fd53434039e9d15d1e069d20d85d0630b339619a48b5155cf775b0a5d6f4` | Project identity and four-capability overview | Repository-original SVG; contributed under MIT; `CONFIRMED` |
+| `readme/architecture.svg` | `b3acf7155074a3c6b26dddca50b11771483c7ec45c23f59693608045ba55c153` | Composer → local ingest → private retrieval → model tools, plus native vision branch | Repository-original SVG; contributed under MIT; `CONFIRMED` |
+| `readme/evidence-loop.svg` | `dba1e3db5d5eebf9f3db68bad2ea0573ead2adb5eced9f755d23ac58bc5eb8b5` | Inventory → retrieve → expand → answer workflow | Repository-original SVG; contributed under MIT; `CONFIRMED` |
+| `readme/hero.zh.svg` | `70f46250af84cd4aab1a18e13e3123c820a226a8f9aad71782ff2e9c165f5319` | Simplified-Chinese hero for `README.zh.md` | Repository-original SVG; contributed under MIT; `CONFIRMED` |
+| `readme/architecture.zh.svg` | `83e5fcb3685df3be9acee6910854038b4e87a1fe3b741a4c483c8a5c70aac634` | Simplified-Chinese architecture diagram for `README.zh.md` | Repository-original SVG; contributed under MIT; `CONFIRMED` |
+| `readme/evidence-loop.zh.svg` | `0ab4f0c512d5fa7e9bbfa63efe1471e73f38ed7c7ebcf203bcf27ab993b87775` | Simplified-Chinese evidence-loop diagram for `README.zh.md` | Repository-original SVG; contributed under MIT; `CONFIRMED` |
 
 Confirmation / 确认：
 

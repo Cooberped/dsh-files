@@ -60,22 +60,22 @@
         <rect y="60" width="227" height="48" rx="12" fill="#332325"/><text x="18" y="90" fill="#ffe8e2" font-size="15">read_document</text>
         <rect y="120" width="227" height="48" rx="12" fill="#332325"/><text x="18" y="150" fill="#ffe8e2" font-size="15">带版本坐标校验</text>
       </g>
-      <text x="24" y="305" fill="#ff9c88" font-size="13" font-weight="700">截断与边界一律显式</text>
+      <text x="24" y="305" fill="#ff9c88" font-size="13" font-weight="700">截断与上限一律显式</text>
     </g>
   </g>
 
-  <path d="M347 325h45" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
-  <path d="M677 325h45" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
-  <path d="M1007 325h45" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M377 325h45" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M707 325h45" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
+  <path d="M1037 325h45" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
 
   <g transform="translate(72 545)" font-family="Inter, &quot;PingFang SC&quot;, &quot;Hiragino Sans GB&quot;, &quot;Microsoft YaHei&quot;, &quot;Noto Sans CJK SC&quot;, &quot;Source Han Sans SC&quot;, ui-sans-serif, system-ui, sans-serif">
     <rect width="1265" height="106" rx="20" fill="#132234" stroke="#304b64"/>
-    <rect x="24" y="24" width="118" height="58" rx="14" fill="#2c2020"/><text x="68" y="59" fill="#ff9c88" font-size="15" font-weight="700">图片</text>
-    <path d="M158 53h76" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
-    <rect x="250" y="24" width="250" height="58" rx="14" fill="#172b40"/><text x="304" y="59" fill="#d8e5ef" font-size="15">Harness 原生附件栏</text>
-    <path d="M516 53h76" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
-    <rect x="608" y="24" width="242" height="58" rx="14" fill="#172b40"/><text x="644" y="59" fill="#d8e5ef" font-size="15">供应商中立的 image_url</text>
-    <path d="M866 53h76" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
-    <rect x="958" y="24" width="281" height="58" rx="14" fill="#173529"/><text x="1000" y="59" fill="#d9f1e7" font-size="15">任何声明支持视觉的模型</text>
+    <rect x="24" y="24" width="92" height="58" rx="14" fill="#2c2020"/><text x="54" y="59" fill="#ff9c88" font-size="15" font-weight="700">图片</text>
+    <path d="M156 53h76" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="272" y="24" width="201" height="58" rx="14" fill="#172b40"/><text x="302" y="59" fill="#d8e5ef" font-size="15">Harness 原生附件栏</text>
+    <path d="M513 53h76" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="628" y="24" width="227" height="58" rx="14" fill="#172b40"/><text x="658" y="59" fill="#d8e5ef" font-size="15">供应商中立的 image_url</text>
+    <path d="M895 53h76" stroke="#6d879d" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="1011" y="24" width="230" height="58" rx="14" fill="#173529"/><text x="1041" y="59" fill="#d9f1e7" font-size="15">任何声明支持视觉的模型</text>
   </g>
 </svg>

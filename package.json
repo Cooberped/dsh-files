@@ -98,6 +98,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.client.json && tsc -p tsconfig.build.json && node build.mjs",
+    "assets:build": "node scripts/build-assets.mjs",
+    "assets:check": "node scripts/build-assets.mjs --check",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.client.json",
     "pretest": "node benchmark/generate-fixtures.mjs",
     "test": "node --test",
@@ -108,7 +110,7 @@
     "license:check": "node scripts/check-licenses.mjs",
     "package:check": "node scripts/check-package.mjs",
     "runtime:smoke": "node scripts/runtime-smoke.mjs",
-    "release:check": "npm run typecheck && npm run build && npm test && npm run benchmark:retrieval && npm run license:check && npm run package:check",
+    "release:check": "npm run typecheck && npm run build && npm run assets:check && npm test && npm run benchmark:retrieval && npm run license:check && npm run package:check",
     "prepublishOnly": "npm run release:check"
   }
 }
