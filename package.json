@@ -1,6 +1,6 @@
 {
   "name": "dsh-files",
-  "version": "0.6.0-local.8",
+  "version": "0.6.0-local.9",
   "description": "DeepSeek Harness document-ingestion plugin: native uploads and visual attachments; plus local search_documents retrieval and read_document coordinate expansion for text/PDF/DOCX/XLSX/PPTX, with SQLite FTS5 and dependency-free JS fallback.",
   "keywords": [
     "deepseek",

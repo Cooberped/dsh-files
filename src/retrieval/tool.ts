@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { FsError, type FsTarget, type FsVersion } from '@deepseek-ai/dsh-fs'
 import { formatFromExtension, HEAD_SNIFF_BYTES, sniffFormat, sniffHead, type DocumentFormat } from '../detect.ts'
@@ -98,6 +99,16 @@ function sessionCwd(exec: { agent?: { session?: { header?: { cwd?: string } } } 
   return exec.agent?.session?.header?.cwd
 }
 
+function modelVisiblePath(input: string, cwd: string | undefined): string {
+  const normalized = input.normalize('NFC')
+  if (cwd === undefined || !isAbsolute(normalized)) return normalized
+  const relativePath = relative(resolve(cwd), resolve(normalized))
+  if (relativePath === '' || relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
+    return normalized
+  }
+  return relativePath.split(sep).join('/').normalize('NFC')
+}
+
 function detectedFormat(bytes: Uint8Array, path: string): DocumentFormat | null {
   const head = bytes.subarray(0, Math.min(HEAD_SNIFF_BYTES, bytes.length))
   const headFormat = sniffHead(head)
@@ -141,7 +152,7 @@ async function readSource(
   // Preserve the caller-visible path (normally workspace-relative) in model
   // output. target.displayPath may be an absolute host path and is reserved
   // for internal fs observations/errors.
-  const modelPath = path.normalize('NFC')
+  const modelPath = modelVisiblePath(path, cwd)
   const cached = sourceCache.get(targetKey)
   if (cached?.fsVersion === fsVersion) {
     const descriptor = {

@@ -457,7 +457,10 @@ test('search_documents index mode returns a compact inventory before query retri
   const tool = defineSearchDocumentsTool(
     {
       fs: {
-        resolve: async (path) => ({ targetKey: FsTargetKey(`target:${path}`), displayPath: `/workspace/${path}` }),
+        resolve: async (path) => {
+          const file = path.startsWith('/workspace/') ? path.slice('/workspace/'.length) : path
+          return { targetKey: FsTargetKey(`target:${file}`), displayPath: `/workspace/${file}` }
+        },
         stat: async (target) => {
           const file = target.displayPath.slice('/workspace/'.length)
           const bytes = files.get(file)
@@ -494,10 +497,10 @@ test('search_documents index mode returns a compact inventory before query retri
     agent: { session: { header: { cwd: '/workspace' } } }
   } as unknown as Parameters<typeof tool.execute>[1]
   const indexArgs = {
-    file_paths: [...files.keys()]
+    file_paths: [...files.keys()].map((file) => `/workspace/${file}`)
   }
   const searchArgs = {
-    file_paths: [...files.keys()],
+    file_paths: [...files.keys()].map((file) => `/workspace/${file}`),
     query: 'R-42',
     limit: 12
   }
