@@ -10,11 +10,13 @@ import { FsError, type FsTarget, type FsVersion } from '@deepseek-ai/dsh-fs'
 import { sniffFormat, sniffHead, HEAD_SNIFF_BYTES, SUPPORTED_FORMATS, formatFromExtension, type DocumentFormat } from './detect.ts'
 import { parseDocument, type ParseOptions } from './parse/index.ts'
 import { splitPdfPages } from './parse/pdf.ts'
+import { projectModelPath } from './model-path.ts'
 import { windowLines } from './parse/text.ts'
 import { ParseCache } from './cache.ts'
 import {
   parseDocumentLocator,
   parseWorkbookInventory,
+  renderedSpreadsheetRows,
   retrievalDocumentVersion,
   splitPptxSlides,
   type DocumentLocator
@@ -166,6 +168,46 @@ interface CoordinateScope {
   text: string
   offset: number
   limit: number
+  /** Optional numbering projection for a character slice of one source line. */
+  lineNumberBase?: number
+  displayOffset?: number
+  totalLines?: number
+}
+
+function unicodeCharacterSlice(text: string, startChar: number, endChar: number, coordinate: string): string {
+  const characters = Array.from(text)
+  if (endChar > characters.length) {
+    throw new Error(
+      `coordinate ${JSON.stringify(coordinate)} is out of range: source has ${characters.length} Unicode code point(s)`
+    )
+  }
+  return characters.slice(startChar - 1, endChar).join('')
+}
+
+function exactLineCharacterScope(
+  text: string,
+  locator: Extract<DocumentLocator, { kind: 'line' | 'page' | 'slide' }>,
+  input: Pick<ParsedArgs, 'offsetExplicit' | 'coordinate'>
+): CoordinateScope | null {
+  if (locator.startChar === undefined || locator.endChar === undefined) return null
+  if (input.offsetExplicit) throw new Error('offset cannot be combined with a character-range coordinate')
+  const sourceLine = locator.startLine
+  if (sourceLine === undefined || locator.endLine !== sourceLine) {
+    throw new Error(`invalid character-range coordinate ${JSON.stringify(input.coordinate)}`)
+  }
+  const line = windowLines(text, sourceLine, 1)
+  const value = line.lines[0]
+  if (value === undefined) {
+    throw new Error(`line ${sourceLine} out of range: source has ${line.totalLines} line(s)`)
+  }
+  return {
+    text: unicodeCharacterSlice(value.text, locator.startChar, locator.endChar, input.coordinate ?? ''),
+    offset: 1,
+    limit: 1,
+    lineNumberBase: sourceLine - 1,
+    displayOffset: sourceLine,
+    totalLines: line.totalLines
+  }
 }
 
 function coordinateLineWindow(
@@ -173,6 +215,8 @@ function coordinateLineWindow(
   locator: Extract<DocumentLocator, { kind: 'line' | 'page' | 'slide' }>,
   input: Pick<ParsedArgs, 'offset' | 'offsetExplicit' | 'limit' | 'coordinate'>
 ): CoordinateScope {
+  const characterScope = exactLineCharacterScope(text, locator, input)
+  if (characterScope !== null) return characterScope
   const { startLine, endLine } = locator
   if (startLine !== undefined && endLine !== undefined) {
     if (input.offsetExplicit) throw new Error('offset cannot be combined with a coordinate that already contains a line range')
@@ -207,6 +251,27 @@ export function coordinateScope(
   }
   if (format !== 'xlsx') throw new Error(`coordinate ${JSON.stringify(input.coordinate)} requires an XLSX workbook, detected ${format}`)
   if (input.offsetExplicit) throw new Error('offset cannot be combined with an XLSX coordinate')
+  if (locator.part !== undefined) {
+    throw new Error(
+      `legacy XLSX part coordinate ${JSON.stringify(input.coordinate)} is not safely reversible; rerun search_documents and use its new coordinate/version`
+    )
+  }
+  if (locator.startChar !== undefined && locator.endChar !== undefined) {
+    const range = /^[A-Z]{1,3}(\d+):[A-Z]{1,3}(\d+)$/u.exec(locator.cellRange)
+    if (range === null || range[1] !== range[2]) {
+      throw new Error(`invalid XLSX row character coordinate ${JSON.stringify(input.coordinate)}`)
+    }
+    const rowNumber = Number(range[1])
+    const row = renderedSpreadsheetRows(text).find((candidate) => candidate.rowNumber === rowNumber)
+    if (row === undefined) {
+      throw new Error(`row ${rowNumber} from coordinate was not found in worksheet ${JSON.stringify(locator.sheet)}`)
+    }
+    return {
+      text: unicodeCharacterSlice(row.text, locator.startChar, locator.endChar, input.coordinate ?? ''),
+      offset: 1,
+      limit: input.limit
+    }
+  }
   return { text, offset: 1, limit: input.limit }
 }
 
@@ -235,7 +300,7 @@ export function defineReadDocumentTool(ctx: {
   return defineTool({
     name: 'read_document',
     description:
-      'Read text/PDF/DOCX/XLSX/PPTX without Python. To expand search evidence, pass the coordinate and version returned by search_documents unchanged; page/slide-local line ranges and quoted XLSX Sheet!Range values are resolved precisely. Legacy offset/limit and sheet/cell_range calls remain supported. Results report detected value counts and truncation explicitly.',
+      'Read text/PDF/DOCX/XLSX/PPTX without Python. To expand search evidence, pass the coordinate and version returned by search_documents unchanged; page/slide-local line ranges, Unicode character ranges, and quoted XLSX Sheet!Range values are resolved precisely. Legacy offset/limit and sheet/cell_range calls remain supported. Results report detected value counts and truncation explicitly.',
     parameters: {
       file_path: {
         type: 'string',
@@ -333,18 +398,19 @@ export function defineReadDocumentTool(ctx: {
         ...(cwd !== undefined ? { cwd } : {}),
         signal: exec.signal
       })
+      const modelPath = projectModelPath(input.filePath, target.displayPath, cwd)
       const info = await ctx.fs.stat(target, exec.signal)
       if (info === undefined) {
         ctx.emit('fs/observed', target, { kind: 'absent' }, exec)
-        throw new FsError(`cannot read "${target.displayPath}": not found`, 'FS_NOT_FOUND')
+        throw new FsError(`cannot read "${modelPath}": not found`, 'FS_NOT_FOUND')
       }
       if (info.type !== 'file') {
-        throw new FsError(`cannot read "${target.displayPath}": not a regular file`, 'FS_NOT_REGULAR_FILE')
+        throw new FsError(`cannot read "${modelPath}": not a regular file`, 'FS_NOT_REGULAR_FILE')
       }
       if (info.size !== undefined && info.size > config.maxFileBytes) {
         ctx.emit('fs/observed', target, { kind: 'present', version: info.version }, exec)
         throw new FsError(
-          `cannot read "${target.displayPath}": file is ${info.size} bytes, over the ${config.maxFileBytes} byte limit`,
+          `cannot read "${modelPath}": file is ${info.size} bytes, over the ${config.maxFileBytes} byte limit`,
           'FS_TOO_LARGE'
         )
       }
@@ -357,7 +423,7 @@ export function defineReadDocumentTool(ctx: {
       if (headFormat === null && input.format === 'auto') {
         ctx.emit('fs/observed', target, { kind: 'present', version: info.version }, exec)
         throw new FsError(
-          `cannot read "${target.displayPath}": unrecognized file content (expected text, PDF, DOCX, XLSX or PPTX)`,
+          `cannot read "${modelPath}": unrecognized file content (expected text, PDF, DOCX, XLSX or PPTX)`,
           'FS_NOT_TEXT'
         )
       }
@@ -373,7 +439,7 @@ export function defineReadDocumentTool(ctx: {
       if (format === null) {
         ctx.emit('fs/observed', target, { kind: 'present', version: info.version }, exec)
         throw new FsError(
-          `cannot read "${target.displayPath}": unrecognized file content (expected text, PDF, DOCX, XLSX or PPTX)`,
+          `cannot read "${modelPath}": unrecognized file content (expected text, PDF, DOCX, XLSX or PPTX)`,
           'FS_NOT_TEXT'
         )
       }
@@ -382,7 +448,7 @@ export function defineReadDocumentTool(ctx: {
       if (input.version !== undefined && input.version !== version) {
         ctx.emit('fs/observed', target, { kind: 'present', version: info.version }, exec)
         throw new Error(
-          `cannot expand coordinate for "${target.displayPath}": requested version ${input.version}, current version ${version}; rerun search_documents and use its new coordinate/version`
+          `cannot expand coordinate for "${modelPath}": requested version ${input.version}, current version ${version}; rerun search_documents and use its new coordinate/version`
         )
       }
       const locator = input.coordinate === undefined ? undefined : parseDocumentLocator(input.coordinate)
@@ -394,13 +460,14 @@ export function defineReadDocumentTool(ctx: {
       if ((input.sheet !== undefined || input.listSheets || input.cellRange !== undefined) && format !== 'xlsx') {
         ctx.emit('fs/observed', target, { kind: 'present', version: info.version }, exec)
         throw new FsError(
-          `cannot read "${target.displayPath}": sheet/list_sheets/cell_range parameters are only supported for XLSX files (detected format: ${format})`,
+          `cannot read "${modelPath}": sheet/list_sheets/cell_range parameters are only supported for XLSX files (detected format: ${format})`,
           'FS_NOT_TEXT'
         )
       }
       let selectedSheet = input.sheet
       let selectedCellRange = input.cellRange
       let listSheets = input.listSheets
+      let coordinateFullSheetProjection = false
       if (locator?.kind === 'sheet') {
         if (format !== 'xlsx') {
           throw new Error(`coordinate ${JSON.stringify(input.coordinate)} requires an XLSX workbook, detected ${format}`)
@@ -423,7 +490,13 @@ export function defineReadDocumentTool(ctx: {
           )
         }
         selectedSheet = selected.index
-        selectedCellRange = locator.cellRange
+        if (locator.part !== undefined) {
+          throw new Error(
+            `legacy XLSX part coordinate ${JSON.stringify(input.coordinate)} is not safely reversible; rerun search_documents and use its new coordinate/version`
+          )
+        }
+        coordinateFullSheetProjection = locator.startChar !== undefined
+        selectedCellRange = coordinateFullSheetProjection ? undefined : locator.cellRange
         listSheets = false
       } else if (locator?.kind === 'page' && format !== 'pdf') {
         throw new Error(`coordinate ${JSON.stringify(input.coordinate)} requires a PDF, detected ${format}`)
@@ -438,14 +511,16 @@ export function defineReadDocumentTool(ctx: {
         format,
         sheet: selectedSheet,
         listSheets,
-        cellRange: selectedCellRange
+        // A full-sheet coordinate projection must not alias a normal limited
+        // sheet read in the parse cache: their sheetRowLimit contracts differ.
+        cellRange: coordinateFullSheetProjection ? '__dsh_coordinate_full_sheet__' : selectedCellRange
       }
       // getOrCompute 自带 in-flight 去重：并发分页同一文件只解析一次。
       const text = await cache.getOrCompute(cacheKey, () =>
         // 解析器不接受 AbortSignal；这里包装一层协作取消：
         // 信号触发时立即中止等待，符合 dsh 工具的取消契约。
         parseDocumentWithAbort(bytes, format, {
-          sheetRowLimit: config.sheetRowLimit,
+          sheetRowLimit: coordinateFullSheetProjection ? Number.MAX_SAFE_INTEGER : config.sheetRowLimit,
           maxSheets: config.maxSheets,
           sheet: selectedSheet,
           listOnly: listSheets,
@@ -456,15 +531,18 @@ export function defineReadDocumentTool(ctx: {
         ? { text, offset: input.offset, limit: input.limit }
         : coordinateScope(text, format, locator, input)
       const window = windowLines(scope.text, scope.offset, scope.limit, formatOutputBudget(format, config.maxOutputChars))
+      const lines = scope.lineNumberBase === undefined
+        ? window.lines
+        : window.lines.map((line) => ({ ...line, number: line.number + scope.lineNumberBase! }))
       ctx.emit('fs/observed', target, { kind: 'present', version: info.version }, exec)
       return {
-        path: target.displayPath,
+        path: modelPath,
         format,
         version,
         ...(input.coordinate === undefined ? {} : { coordinate: input.coordinate }),
-        offset: scope.offset,
-        lines: window.lines,
-        totalLines: window.totalLines,
+        offset: scope.displayOffset ?? scope.offset,
+        lines,
+        totalLines: scope.totalLines ?? window.totalLines,
         ...(selectedSheet !== undefined ? { sheet: selectedSheet } : {})
       }
     },

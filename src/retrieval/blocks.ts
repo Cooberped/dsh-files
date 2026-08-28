@@ -13,7 +13,7 @@ import { parseXlsxWorkbook, projectXlsx } from '../parse/xlsx.ts'
  * this to the content digest forces a persistent backend to rebuild old
  * projections instead of serving coordinates produced by obsolete rules.
  */
-export const RETRIEVAL_SCHEMA_VERSION = 'retrieval-v2'
+export const RETRIEVAL_SCHEMA_VERSION = 'retrieval-v3'
 
 export function retrievalDocumentVersion(
   bytes: Uint8Array,
@@ -28,10 +28,10 @@ export function retrievalDocumentVersion(
 export const INDEX_TRUNCATION_MARKER = 'dshfilesindextruncated'
 
 export type DocumentLocator =
-  | { kind: 'page'; page: number; startLine?: number; endLine?: number }
-  | { kind: 'slide'; slide: number; startLine?: number; endLine?: number }
-  | { kind: 'line'; startLine: number; endLine: number }
-  | { kind: 'sheet'; sheet: string; sheetIndex?: number; cellRange: string; part?: number }
+  | { kind: 'page'; page: number; startLine?: number; endLine?: number; startChar?: number; endChar?: number }
+  | { kind: 'slide'; slide: number; startLine?: number; endLine?: number; startChar?: number; endChar?: number }
+  | { kind: 'line'; startLine: number; endLine: number; startChar?: number; endChar?: number }
+  | { kind: 'sheet'; sheet: string; sheetIndex?: number; cellRange: string; part?: number; startChar?: number; endChar?: number }
 
 export interface DocumentBlockBuildMetadata {
   truncated: boolean
@@ -79,11 +79,26 @@ function positiveRange(start: string, end: string): { startLine: number; endLine
   return { startLine, endLine }
 }
 
+function positiveCharacterRange(start: string, end: string): { startChar: number; endChar: number } | null {
+  const startChar = Number(start)
+  const endChar = Number(end)
+  if (!Number.isInteger(startChar) || !Number.isInteger(endChar) || startChar < 1 || endChar < startChar) return null
+  return { startChar, endChar }
+}
+
 /** Parse the stable coordinate grammar emitted by retrieval blocks. */
 export function parseDocumentLocator(
   coordinate: string,
   sheetIndexes?: ReadonlyMap<string, number>
 ): DocumentLocator | null {
+  const pageChars = /^page:(\d+),line:(\d+),chars:(\d+)-(\d+)$/u.exec(coordinate)
+  if (pageChars !== null) {
+    const pageNumber = Number(pageChars[1])
+    const lineNumber = Number(pageChars[2])
+    const chars = positiveCharacterRange(pageChars[3], pageChars[4])
+    if (pageNumber < 1 || lineNumber < 1 || chars === null) return null
+    return { kind: 'page', page: pageNumber, startLine: lineNumber, endLine: lineNumber, ...chars }
+  }
   const page = /^page:(\d+)(?:,lines:(\d+)-(\d+))?$/u.exec(coordinate)
   if (page !== null) {
     const pageNumber = Number(page[1])
@@ -92,6 +107,14 @@ export function parseDocumentLocator(
     if (page[2] !== undefined && range === null) return null
     return { kind: 'page', page: pageNumber, ...(range ?? {}) }
   }
+  const slideChars = /^slide:(\d+),line:(\d+),chars:(\d+)-(\d+)$/u.exec(coordinate)
+  if (slideChars !== null) {
+    const slideNumber = Number(slideChars[1])
+    const lineNumber = Number(slideChars[2])
+    const chars = positiveCharacterRange(slideChars[3], slideChars[4])
+    if (slideNumber < 1 || lineNumber < 1 || chars === null) return null
+    return { kind: 'slide', slide: slideNumber, startLine: lineNumber, endLine: lineNumber, ...chars }
+  }
   const slide = /^slide:(\d+)(?:,lines:(\d+)-(\d+))?$/u.exec(coordinate)
   if (slide !== null) {
     const slideNumber = Number(slide[1])
@@ -99,6 +122,14 @@ export function parseDocumentLocator(
     const range = slide[2] === undefined ? null : positiveRange(slide[2], slide[3])
     if (slide[2] !== undefined && range === null) return null
     return { kind: 'slide', slide: slideNumber, ...(range ?? {}) }
+  }
+  const lineChars = /^line:(\d+),chars:(\d+)-(\d+)$/u.exec(coordinate)
+  if (lineChars !== null) {
+    const line = Number(lineChars[1])
+    const chars = positiveCharacterRange(lineChars[2], lineChars[3])
+    return line < 1 || chars === null
+      ? null
+      : { kind: 'line', startLine: line, endLine: line, ...chars }
   }
   const oneLine = /^line:(\d+)$/u.exec(coordinate)
   if (oneLine !== null) {
@@ -111,8 +142,12 @@ export function parseDocumentLocator(
     return range === null ? null : { kind: 'line', ...range }
   }
 
-  const partMatch = /,part:(\d+)$/u.exec(coordinate)
-  const cellCoordinate = partMatch === null ? coordinate : coordinate.slice(0, partMatch.index)
+  const charMatch = /,chars:(\d+)-(\d+)$/u.exec(coordinate)
+  const withoutChars = charMatch === null ? coordinate : coordinate.slice(0, charMatch.index)
+  const charRange = charMatch === null ? null : positiveCharacterRange(charMatch[1], charMatch[2])
+  if (charMatch !== null && charRange === null) return null
+  const partMatch = /,part:(\d+)$/u.exec(withoutChars)
+  const cellCoordinate = partMatch === null ? withoutChars : withoutChars.slice(0, partMatch.index)
   const quoted = /^'((?:[^']|'')+)'!([A-Z]{1,3}\d+:[A-Z]{1,3}\d+)$/u.exec(cellCoordinate)
   const plain = quoted === null ? /^([^!'\r\n]+)!([A-Z]{1,3}\d+:[A-Z]{1,3}\d+)$/u.exec(cellCoordinate) : null
   const match = quoted ?? plain
@@ -126,7 +161,8 @@ export function parseDocumentLocator(
       sheet,
       ...(sheetIndex === undefined ? {} : { sheetIndex }),
       cellRange: match[2],
-      ...(part === undefined ? {} : { part })
+      ...(part === undefined ? {} : { part }),
+      ...(charRange ?? {})
     }
   }
   return null
@@ -170,14 +206,27 @@ interface TextChunk {
   startLine: number
   endLine: number
   text: string
+  startChar?: number
+  endChar?: number
 }
 
-function splitLongLine(line: string, maxChars: number): string[] {
-  const chars = Array.from(line)
-  if (chars.length <= maxChars) return [line]
-  const output: string[] = []
+interface TextCharacterRange {
+  text: string
+  startChar: number
+  endChar: number
+}
+
+function splitTextRanges(value: string, maxChars: number): TextCharacterRange[] {
+  const chars = Array.from(value)
+  if (chars.length === 0) return []
+  const output: TextCharacterRange[] = []
   for (let offset = 0; offset < chars.length; offset += maxChars) {
-    output.push(chars.slice(offset, offset + maxChars).join(''))
+    const part = chars.slice(offset, offset + maxChars)
+    output.push({
+      text: part.join(''),
+      startChar: offset + 1,
+      endChar: offset + part.length
+    })
   }
   return output
 }
@@ -206,15 +255,31 @@ async function chunkLines(value: string, maxChars: number, signal?: AbortSignal)
     size = 0
   }
   for (const [index, line] of source.entries()) {
-    for (const part of splitLongLine(line, maxChars)) {
-      const entry = { line: index + 1, value: part }
-      const added = entry.value.length + (current.length > 0 ? 1 : 0)
-      if (current.length > 0 && size + added > maxChars) flush()
-      current.push(entry)
-      size += entry.value.length + (current.length > 1 ? 1 : 0)
-      operations += 1
-      if (operations % COOPERATIVE_YIELD_INTERVAL === 0) await yieldToEventLoop(signal)
+    const lineParts = splitTextRanges(line, maxChars)
+    if (lineParts.length > 1) {
+      flush()
+      for (const part of lineParts) {
+        if (part.text.trim() !== '') {
+          output.push({
+            startLine: index + 1,
+            endLine: index + 1,
+            text: part.text,
+            startChar: part.startChar,
+            endChar: part.endChar
+          })
+        }
+        operations += 1
+        if (operations % COOPERATIVE_YIELD_INTERVAL === 0) await yieldToEventLoop(signal)
+      }
+      continue
     }
+    const entry = { line: index + 1, value: line }
+    const added = entry.value.length + (current.length > 0 ? 1 : 0)
+    if (current.length > 0 && size + added > maxChars) flush()
+    current.push(entry)
+    size += entry.value.length + (current.length > 1 ? 1 : 0)
+    operations += 1
+    if (operations % COOPERATIVE_YIELD_INTERVAL === 0) await yieldToEventLoop(signal)
   }
   flush()
   return output.filter((entry) => entry.text !== '')
@@ -266,7 +331,9 @@ async function genericBlocks(
 ): Promise<void> {
   for (const chunk of await chunkLines(text, options.blockChars, options.signal)) {
     checkAborted(options.signal)
-    const coordinate = chunk.startLine === chunk.endLine
+    const coordinate = chunk.startChar !== undefined && chunk.endChar !== undefined
+      ? `line:${chunk.startLine},chars:${chunk.startChar}-${chunk.endChar}`
+      : chunk.startLine === chunk.endLine
       ? `line:${chunk.startLine}`
       : `lines:${chunk.startLine}-${chunk.endLine}`
     if (!appendBlock(
@@ -294,7 +361,11 @@ async function pdfBlocks(
     const chunks = await chunkLines(page, options.blockChars, options.signal)
     for (const chunk of chunks) {
       const base = `page:${pageIndex + 1}`
-      const coordinate = chunks.length === 1 ? base : `${base},lines:${chunk.startLine}-${chunk.endLine}`
+      const coordinate = chunk.startChar !== undefined && chunk.endChar !== undefined
+        ? `${base},line:${chunk.startLine},chars:${chunk.startChar}-${chunk.endChar}`
+        : chunks.length === 1
+          ? base
+          : `${base},lines:${chunk.startLine}-${chunk.endLine}`
       if (!appendBlock(
         state,
         document,
@@ -339,7 +410,11 @@ async function pptxBlocks(
     const chunks = await chunkLines(section.text, options.blockChars, options.signal)
     for (const chunk of chunks) {
       const base = `slide:${section.slide}`
-      const coordinate = chunks.length === 1 ? base : `${base},lines:${chunk.startLine}-${chunk.endLine}`
+      const coordinate = chunk.startChar !== undefined && chunk.endChar !== undefined
+        ? `${base},line:${chunk.startLine},chars:${chunk.startChar}-${chunk.endChar}`
+        : chunks.length === 1
+          ? base
+          : `${base},lines:${chunk.startLine}-${chunk.endLine}`
       if (!appendBlock(
         state,
         document,
@@ -401,6 +476,50 @@ function renderSpreadsheetRow(columns: string[], headerValues: string[], values:
   return output.join('\n')
 }
 
+export interface RenderedSpreadsheetRow {
+  rowNumber: number
+  text: string
+  lastColumn: string
+  columnHeading: string
+}
+
+/**
+ * Convert one full-sheet parser projection into the canonical row text used
+ * by both indexing and coordinate expansion. Keeping this projection shared
+ * makes XLSX character coordinates mechanically reversible.
+ */
+export function renderedSpreadsheetRows(projection: string): RenderedSpreadsheetRow[] {
+  const lines = projection.split('\n')
+  const headerIndex = lines.findIndex((line) => line === 'row' || line.startsWith('row\t'))
+  if (headerIndex < 0) return []
+  const columns = lines[headerIndex].split('\t').slice(1)
+  const rows: Array<{ rowNumber: number; values: string[] }> = []
+  for (const line of lines.slice(headerIndex + 1)) {
+    if (line.trim() === '' || line.startsWith('… truncated:')) continue
+    const cells = line.split('\t')
+    const rowNumber = Number(cells.shift())
+    if (!Number.isInteger(rowNumber) || rowNumber < 1) continue
+    rows.push({ rowNumber, values: cells })
+  }
+  // The first row is often a title merged across columns. Prefer the first
+  // row with at least two populated cells as the structural header; fall
+  // back to the first populated row for single-column sheets.
+  const headerValues = (
+    rows.find((row) => row.values.filter((value) => value.trim() !== '').length >= 2) ?? rows[0]
+  )?.values ?? []
+  return rows.map(({ rowNumber, values }) => ({
+    rowNumber,
+    text: renderSpreadsheetRow(columns, headerValues, values, rowNumber),
+    lastColumn: columnName(Math.max(columns.length, values.length, 1)),
+    columnHeading: columns
+      .map((column, index) => {
+        const label = headerValues[index]?.trim()
+        return label === undefined || label === '' ? column : `${column} ${label}`
+      })
+      .join(' · ')
+  }))
+}
+
 async function xlsxBlocks(
   bytes: Uint8Array,
   document: DocumentDescriptor,
@@ -424,45 +543,21 @@ async function xlsxBlocks(
       maxSheets: sheets.length,
       sheet: sheet.index
     })
-    const lines = projection.split('\n')
-    const headerIndex = lines.findIndex((line) => line === 'row' || line.startsWith('row\t'))
-    if (headerIndex < 0) continue
-    const columns = lines[headerIndex].split('\t').slice(1)
-    const rows: Array<{ rowNumber: number; values: string[] }> = []
+    const rows = renderedSpreadsheetRows(projection)
     let scannedRows = 0
-    for (const line of lines.slice(headerIndex + 1)) {
-      if (line.trim() === '' || line.startsWith('… truncated:')) continue
-      const cells = line.split('\t')
-      const rowNumber = Number(cells.shift())
-      if (!Number.isInteger(rowNumber) || rowNumber < 1) continue
-      rows.push({ rowNumber, values: cells })
+    for (const { rowNumber, text: rendered, lastColumn, columnHeading } of rows) {
       scannedRows += 1
       if (scannedRows % COOPERATIVE_YIELD_INTERVAL === 0) await yieldToEventLoop(options.signal)
-    }
-    // The first row is often a title merged across columns. Prefer the first
-    // row with at least two populated cells as the structural header; fall
-    // back to the first populated row for single-column sheets.
-    const headerValues = (
-      rows.find((row) => row.values.filter((value) => value.trim() !== '').length >= 2) ?? rows[0]
-    )?.values ?? []
-    for (const { rowNumber, values } of rows) {
-      const lastColumn = columnName(Math.max(columns.length, values.length, 1))
       const coordinate = `${formatWorksheetName(sheet.name)}!A${rowNumber}:${lastColumn}${rowNumber}`
-      const columnHeading = columns
-        .map((column, index) => {
-          const label = headerValues[index]?.trim()
-          return label === undefined || label === '' ? column : `${column} ${label}`
-        })
-        .join(' · ')
       const heading = `${sheet.name} · ${coordinate} · ${columnHeading}`
-      const rendered = renderSpreadsheetRow(columns, headerValues, values, rowNumber)
-      for (const [partIndex, part] of splitLongLine(rendered, options.blockChars).entries()) {
+      const parts = splitTextRanges(rendered, options.blockChars)
+      for (const part of parts) {
         if (!appendBlock(
           state,
           document,
-          partIndex === 0 ? coordinate : `${coordinate},part:${partIndex + 1}`,
+          parts.length === 1 ? coordinate : `${coordinate},chars:${part.startChar}-${part.endChar}`,
           heading,
-          part,
+          part.text,
           options.maxBlocks
         )) break sheets
         await maybeYieldAfterBlock(state, options.signal)

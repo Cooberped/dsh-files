@@ -257,9 +257,36 @@ const fixtureDir = join(process.cwd(), 'benchmark', 'fixtures', 'generated')
 test('retrieval versions bind content to an explicit parser/block schema', () => {
   const bytes = new TextEncoder().encode('stable content')
   const current = retrievalDocumentVersion(bytes)
-  assert.match(current, /^retrieval-v2:[0-9a-f]{64}$/u)
+  assert.match(current, /^retrieval-v3:[0-9a-f]{64}$/u)
+  assert.notEqual(current, retrievalDocumentVersion(bytes, 'retrieval-v2'))
   assert.notEqual(current, retrievalDocumentVersion(bytes, 'retrieval-v1'))
   assert.notEqual(current, retrievalDocumentVersion(new TextEncoder().encode('changed content')))
+})
+
+test('long-line block coordinates are unique reversible Unicode code-point ranges', async () => {
+  const text = `${'😀'.repeat(32)}TARGET-TAIL`
+  const bytes = new TextEncoder().encode(text)
+  const descriptor: DocumentDescriptor = {
+    id: 'unicode-tail',
+    path: 'unicode-tail.txt',
+    format: 'text',
+    version: retrievalDocumentVersion(bytes)
+  }
+  const blocks = await buildDocumentBlocks(bytes, descriptor, { blockChars: 16, maxBlocks: 20 })
+  assert.equal(new Set(blocks.map((block) => block.coordinate)).size, blocks.length)
+  assert.deepEqual(blocks.map((block) => block.coordinate), [
+    'line:1,chars:1-16',
+    'line:1,chars:17-32',
+    'line:1,chars:33-43'
+  ])
+  assert.equal(blocks.at(-1)?.text, 'TARGET-TAIL')
+  assert.deepEqual(parseDocumentLocator(blocks.at(-1)?.coordinate ?? ''), {
+    kind: 'line',
+    startLine: 1,
+    endLine: 1,
+    startChar: 33,
+    endChar: 43
+  })
 })
 
 test('block limit degrades to an explicit cached truncation marker without exceeding the contract', async () => {
@@ -297,6 +324,14 @@ test('XLSX coordinates quote spaces/apostrophes and inventory rejects line-break
     sheetIndex: 3,
     cellRange: 'A5:F5'
   })
+  assert.deepEqual(parseDocumentLocator("'O''Brien Plan'!A5:F5,chars:17-32", new Map([["O'Brien Plan", 3]])), {
+    kind: 'sheet',
+    sheet: "O'Brien Plan",
+    sheetIndex: 3,
+    cellRange: 'A5:F5',
+    startChar: 17,
+    endChar: 32
+  })
   assert.throws(
     () => parseWorkbookInventory('### Workbook (1 sheets)\n1. Broken\nName — used A1:A1; 1 populated rows; 1 non-empty cells'),
     /worksheet name.*line break/
@@ -328,7 +363,7 @@ test('search_documents rebuilds a same-content index created by an older retriev
     id,
     path: '/workspace/doc.txt',
     format: 'text',
-    version: retrievalDocumentVersion(bytes, 'retrieval-v1')
+    version: retrievalDocumentVersion(bytes, 'retrieval-v2')
   }, [], Date.now())
   const tool = defineSearchDocumentsTool({
     fs: {
@@ -361,6 +396,76 @@ test('search_documents rebuilds a same-content index created by an older retriev
     assert.equal(result.documentCount, 1)
     assert.equal(result.documents[0].version, retrievalDocumentVersion(bytes))
     assert.equal(backend.documentVersion(id), retrievalDocumentVersion(bytes))
+  } finally {
+    backend.close()
+  }
+})
+
+test('search_documents refreshes a same-version persistent descriptor before returning hits', async () => {
+  const bytes = new TextEncoder().encode('STALE-PATH-EVIDENCE')
+  const targetKey = 'target:stale-path.txt'
+  const id = createHash('sha256').update(targetKey).digest('hex')
+  const version = retrievalDocumentVersion(bytes)
+  const backend = new SqliteRetrievalBackend(new DatabaseSync(':memory:'))
+  const staleDescriptor: DocumentDescriptor = {
+    id,
+    path: '/Users/private-account/secret-workspace/stale-path.txt',
+    format: 'text',
+    version
+  }
+  backend.replaceDocument(staleDescriptor, [{
+    id: 'stale-path-block',
+    documentId: id,
+    version,
+    ordinal: 1,
+    coordinate: 'line:1',
+    heading: 'stale path evidence',
+    text: 'STALE-PATH-EVIDENCE'
+  }], Date.now())
+  let reads = 0
+  const tool = defineSearchDocumentsTool({
+    fs: {
+      resolve: async () => ({ targetKey: FsTargetKey(targetKey), displayPath: '/workspace/stale-path.txt' }),
+      stat: async () => ({ version: FsVersion('fs-v1'), type: 'file', size: bytes.length }),
+      readBytes: async () => {
+        reads += 1
+        return bytes
+      }
+    },
+    emit: () => undefined
+  }, {
+    maxFileBytes: 1024,
+    maxFiles: 2,
+    maxResults: 4,
+    blockChars: 128,
+    maxBlocksPerDocument: 8,
+    documentTtlMs: 1000,
+    queryLogTtlMs: 1000,
+    timeoutMs: 1000
+  }, Promise.resolve({
+    backend,
+    report: { nodeVersion: process.versions.node, backend: 'sqlite-fts5', phraseProbe: true }
+  }))
+  const exec = {
+    signal: new AbortController().signal,
+    agent: { session: { header: { cwd: '/workspace' } } }
+  } as unknown as Parameters<typeof tool.execute>[1]
+  try {
+    const result = await tool.execute({
+      file_paths: ['/workspace/stale-path.txt'],
+      query: 'STALE PATH EVIDENCE'
+    }, exec) as {
+      indexedDocuments: number
+      documents: Array<{ path: string }>
+      results: Array<{ path: string; text: string }>
+    }
+    assert.equal(result.indexedDocuments, 0, 'same content/schema version reuses blocks')
+    assert.equal(reads, 1, 'bytes are read once to establish the current descriptor')
+    assert.deepEqual(result.documents.map((document) => document.path), ['stale-path.txt'])
+    assert.equal(result.results[0]?.path, 'stale-path.txt')
+    assert.match(result.results[0]?.text ?? '', /STALE-PATH-EVIDENCE/)
+    assert.doesNotMatch(JSON.stringify(result), /\/Users\/private-account/u)
+    assert.equal(backend.search(buildQueryPlan('EVIDENCE'), [id], 1)[0]?.path, 'stale-path.txt')
   } finally {
     backend.close()
   }

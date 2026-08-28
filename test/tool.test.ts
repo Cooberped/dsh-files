@@ -8,7 +8,11 @@ import { ParseCache } from '../src/cache.ts'
 import { FsError, FsTargetKey, FsVersion } from '@deepseek-ai/dsh-fs'
 import { PDFDocument, StandardFonts } from 'pdf-lib'
 import JSZip from 'jszip'
-import { retrievalDocumentVersion } from '../src/retrieval/blocks.ts'
+import {
+  buildDocumentBlocks,
+  retrievalDocumentVersion,
+  type DocumentDescriptor
+} from '../src/retrieval/blocks.ts'
 
 function testTool(bytes: Uint8Array, displayPath: string) {
   const fs = {
@@ -66,13 +70,13 @@ async function coordinatePptx(): Promise<Uint8Array> {
   return new Uint8Array(await zip.generateAsync({ type: 'nodebuffer' }))
 }
 
-async function coordinateXlsx(): Promise<Uint8Array> {
+async function coordinateXlsx(target = 'XLSX-TARGET'): Promise<Uint8Array> {
   const zip = new JSZip()
   zip.file('[Content_Types].xml', `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`)
   zip.file('_rels/.rels', `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`)
   zip.file('xl/workbook.xml', `<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="O'Brien Plan" sheetId="1" r:id="rId1"/></sheets></workbook>`)
   zip.file('xl/_rels/workbook.xml.rels', `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`)
-  zip.file('xl/worksheets/sheet1.xml', `<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>ignore</t></is></c></row><row r="2"><c r="B2" t="inlineStr"><is><t>XLSX-TARGET</t></is></c><c r="C2"><v>42</v></c></row></sheetData></worksheet>`)
+  zip.file('xl/worksheets/sheet1.xml', `<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>ignore</t></is></c><c r="B1" t="inlineStr"><is><t>Metric</t></is></c><c r="C1" t="inlineStr"><is><t>Value</t></is></c></row><row r="2"><c r="B2" t="inlineStr"><is><t>${target}</t></is></c><c r="C2"><v>42</v></c></row></sheetData></worksheet>`)
   return new Uint8Array(await zip.generateAsync({ type: 'nodebuffer' }))
 }
 
@@ -104,10 +108,13 @@ test('read_document expands a versioned PDF page coordinate exactly', async () =
     coordinate: 'page:2',
     version: retrievalDocumentVersion(bytes)
   }) as {
+    path: string
     version: string
     coordinate: string
     lines: Array<{ text: string }>
   }
+  assert.equal(result.path, 'sample.pdf')
+  assert.doesNotMatch(JSON.stringify(result), /\/workspace\//u)
   assert.equal(result.version, retrievalDocumentVersion(bytes))
   assert.equal(result.coordinate, 'page:2')
   assert.match(result.lines.map((line) => line.text).join('\n'), /PAGE-TWO-TARGET/)
@@ -152,6 +159,77 @@ test('read_document rejects a stale search version before coordinate expansion',
       version: retrievalDocumentVersion(bytes, 'retrieval-v1')
     }),
     /requested version .* current version .* rerun search_documents/
+  )
+})
+
+test('read_document rejects a resolved target outside cwd without exposing the host path', async () => {
+  const bytes = new TextEncoder().encode('private')
+  let error: unknown
+  try {
+    await testExec(testTool(bytes, '/Users/private-account/secret.txt'), {
+      file_path: '/Users/private-account/secret.txt'
+    })
+  } catch (caught) {
+    error = caught
+  }
+  assert.ok(error instanceof Error)
+  assert.match(error.message, /outside the active session workspace/)
+  assert.doesNotMatch(error.message, /\/Users\/private-account/u)
+})
+
+test('read_document expands a long-line tail block by Unicode code-point range', async () => {
+  const source = `${'😀'.repeat(32)}TARGET-TAIL`
+  const bytes = new TextEncoder().encode(source)
+  const descriptor: DocumentDescriptor = {
+    id: 'text-tail',
+    path: 'tail.txt',
+    format: 'text',
+    version: retrievalDocumentVersion(bytes)
+  }
+  const blocks = await buildDocumentBlocks(bytes, descriptor, { blockChars: 16, maxBlocks: 20 })
+  const tail = blocks.find((block) => block.text.includes('TARGET-TAIL'))
+  assert.ok(tail)
+  assert.equal(tail.coordinate, 'line:1,chars:33-43')
+  const result = await testExec(testTool(bytes, '/workspace/tail.txt'), {
+    file_path: 'tail.txt',
+    coordinate: tail.coordinate,
+    version: descriptor.version
+  }) as { path: string; offset: number; lines: Array<{ number: number; text: string }> }
+  assert.equal(result.path, 'tail.txt')
+  assert.equal(result.offset, 1)
+  assert.deepEqual(result.lines, [{ number: 1, text: tail.text }])
+})
+
+test('XLSX long-row blocks replace legacy part coordinates with reversible character ranges', async () => {
+  const bytes = await coordinateXlsx(`${'H'.repeat(96)}TARGET-TAIL`)
+  const descriptor: DocumentDescriptor = {
+    id: 'xlsx-tail',
+    path: 'tail.xlsx',
+    format: 'xlsx',
+    version: retrievalDocumentVersion(bytes)
+  }
+  const blocks = await buildDocumentBlocks(bytes, descriptor, { blockChars: 32, maxBlocks: 100 })
+  assert.equal(blocks.some((block) => block.coordinate.includes(',part:')), false)
+  const tail = blocks.find((block) => block.text.includes('TARGET-TAIL'))
+  assert.ok(tail)
+  assert.match(tail.coordinate, /^'O''Brien Plan'!A2:C2,chars:\d+-\d+$/u)
+  const result = await testExec(testTool(bytes, '/workspace/tail.xlsx'), {
+    file_path: 'tail.xlsx',
+    coordinate: tail.coordinate,
+    version: descriptor.version
+  }) as { coordinate: string; sheet: number; lines: Array<{ text: string }> }
+  assert.equal(result.coordinate, tail.coordinate)
+  assert.equal(result.sheet, 1)
+  assert.equal(result.lines.map((line) => line.text).join('\n'), tail.text)
+  assert.match(tail.text, /TARGET-TAIL/)
+
+  await assert.rejects(
+    testExec(testTool(bytes, '/workspace/tail.xlsx'), {
+      file_path: 'tail.xlsx',
+      coordinate: "'O''Brien Plan'!A2:C2,part:2",
+      version: descriptor.version
+    }),
+    /legacy XLSX part coordinate .* not safely reversible/
   )
 })
 

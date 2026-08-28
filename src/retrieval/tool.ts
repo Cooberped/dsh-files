@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
-import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { FsError, type FsTarget, type FsVersion } from '@deepseek-ai/dsh-fs'
 import { formatFromExtension, HEAD_SNIFF_BYTES, sniffFormat, sniffHead, type DocumentFormat } from '../detect.ts'
 import { parseDocument } from '../parse/index.ts'
+import { projectModelPath } from '../model-path.ts'
 import {
   buildDocumentBlocks,
   documentBlockBuildMetadata,
@@ -99,16 +99,6 @@ function sessionCwd(exec: { agent?: { session?: { header?: { cwd?: string } } } 
   return exec.agent?.session?.header?.cwd
 }
 
-function modelVisiblePath(input: string, cwd: string | undefined): string {
-  const normalized = input.normalize('NFC')
-  if (cwd === undefined || !isAbsolute(normalized)) return normalized
-  const relativePath = relative(resolve(cwd), resolve(normalized))
-  if (relativePath === '' || relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
-    return normalized
-  }
-  return relativePath.split(sep).join('/').normalize('NFC')
-}
-
 function detectedFormat(bytes: Uint8Array, path: string): DocumentFormat | null {
   const head = bytes.subarray(0, Math.min(HEAD_SNIFF_BYTES, bytes.length))
   const headFormat = sniffHead(head)
@@ -134,25 +124,24 @@ async function readSource(
   sourceCache: Map<string, CachedSource>
 ): Promise<ReadSource> {
   const target = await ctx.fs.resolve(path, { ...(cwd !== undefined ? { cwd } : {}), signal: exec.signal })
+  const modelPath = projectModelPath(path, target.displayPath, cwd)
   const info = await ctx.fs.stat(target, exec.signal)
   if (info === undefined) {
     ctx.emit('fs/observed', target, { kind: 'absent' }, exec)
-    throw new FsError(`cannot index "${target.displayPath}": not found`, 'FS_NOT_FOUND')
+    throw new FsError(`cannot index "${modelPath}": not found`, 'FS_NOT_FOUND')
   }
-  if (info.type !== 'file') throw new FsError(`cannot index "${target.displayPath}": not a regular file`, 'FS_NOT_REGULAR_FILE')
+  if (info.type !== 'file') throw new FsError(`cannot index "${modelPath}": not a regular file`, 'FS_NOT_REGULAR_FILE')
   if (info.size !== undefined && info.size > config.maxFileBytes) {
     ctx.emit('fs/observed', target, { kind: 'present', version: info.version }, exec)
     throw new FsError(
-      `cannot index "${target.displayPath}": file is ${info.size} bytes, over the ${config.maxFileBytes} byte limit`,
+      `cannot index "${modelPath}": file is ${info.size} bytes, over the ${config.maxFileBytes} byte limit`,
       'FS_TOO_LARGE'
     )
   }
   const targetKey = String(target.targetKey)
   const fsVersion = String(info.version)
-  // Preserve the caller-visible path (normally workspace-relative) in model
-  // output. target.displayPath may be an absolute host path and is reserved
-  // for internal fs observations/errors.
-  const modelPath = modelVisiblePath(path, cwd)
+  // Keep target.displayPath only on internal fs observations. Model-facing
+  // values and errors use the cwd-contained relative projection above.
   const cached = sourceCache.get(targetKey)
   if (cached?.fsVersion === fsVersion) {
     const descriptor = {
@@ -169,7 +158,7 @@ async function readSource(
   if (format === null) {
     ctx.emit('fs/observed', target, { kind: 'present', version: info.version }, exec)
     throw new FsError(
-      `cannot index "${target.displayPath}": unrecognized file content (expected text, PDF, DOCX, XLSX or PPTX)`,
+      `cannot index "${modelPath}": unrecognized file content (expected text, PDF, DOCX, XLSX or PPTX)`,
       'FS_NOT_TEXT'
     )
   }
@@ -202,7 +191,7 @@ async function bytesForIndex(
 ): Promise<Uint8Array> {
   const bytes = source.bytes ?? await ctx.fs.readBytes(source.target, signal, config.maxFileBytes)
   if (retrievalDocumentVersion(bytes) !== source.descriptor.version) {
-    throw new Error(`cannot index "${source.target.displayPath}": file changed while it was being indexed; retry the search`)
+    throw new Error(`cannot index "${source.descriptor.path}": file changed while it was being indexed; retry the search`)
   }
   return bytes
 }
@@ -217,6 +206,8 @@ interface SearchResultLocator {
   sheetIndex?: number
   cellRange?: string
   part?: number
+  charStart?: number
+  charEnd?: number
 }
 
 interface SearchDocumentsValue {
@@ -246,25 +237,33 @@ function locatorOutput(locator: DocumentLocator | null): SearchResultLocator {
     return {
       kind: locator.kind,
       page: locator.page,
-      ...(locator.startLine === undefined ? {} : { lineStart: locator.startLine, lineEnd: locator.endLine })
+      ...(locator.startLine === undefined ? {} : { lineStart: locator.startLine, lineEnd: locator.endLine }),
+      ...(locator.startChar === undefined ? {} : { charStart: locator.startChar, charEnd: locator.endChar })
     }
   }
   if (locator.kind === 'slide') {
     return {
       kind: locator.kind,
       slide: locator.slide,
-      ...(locator.startLine === undefined ? {} : { lineStart: locator.startLine, lineEnd: locator.endLine })
+      ...(locator.startLine === undefined ? {} : { lineStart: locator.startLine, lineEnd: locator.endLine }),
+      ...(locator.startChar === undefined ? {} : { charStart: locator.startChar, charEnd: locator.endChar })
     }
   }
   if (locator.kind === 'line') {
-    return { kind: locator.kind, lineStart: locator.startLine, lineEnd: locator.endLine }
+    return {
+      kind: locator.kind,
+      lineStart: locator.startLine,
+      lineEnd: locator.endLine,
+      ...(locator.startChar === undefined ? {} : { charStart: locator.startChar, charEnd: locator.endChar })
+    }
   }
   return {
     kind: locator.kind,
     sheet: locator.sheet,
     ...(locator.sheetIndex === undefined ? {} : { sheetIndex: locator.sheetIndex }),
     cellRange: locator.cellRange,
-    ...(locator.part === undefined ? {} : { part: locator.part })
+    ...(locator.part === undefined ? {} : { part: locator.part }),
+    ...(locator.startChar === undefined ? {} : { charStart: locator.startChar, charEnd: locator.endChar })
   }
 }
 
@@ -317,7 +316,7 @@ export function defineSearchDocumentsTool(
   return defineTool({
     name: 'search_documents',
     description:
-      'Index or search selected PDF/DOCX/XLSX/PPTX/text files locally before reading long documents. Omit query when the user asks to first read, understand or prepare files without a concrete question: this builds the private index and returns only a compact inventory, not document body text. For a concrete question, pass a short keyword or exact phrase (omit question filler) to receive versioned page/line/Sheet!Range/slide evidence plus a machine locator. Expand evidence by passing the returned coordinate and version unchanged to read_document; do not use Python or Bash for supported files.',
+      'Index or search selected PDF/DOCX/XLSX/PPTX/text files locally before reading long documents. Omit query when the user asks to first read, understand or prepare files without a concrete question: this builds the private index and returns only a compact inventory, not document body text. For a concrete question, pass a short keyword or exact phrase (omit question filler) to receive versioned page/line/Sheet!Range/slide evidence plus a machine locator; oversized source lines use reversible Unicode character ranges. Expand evidence by passing the returned coordinate and version unchanged to read_document; do not use Python or Bash for supported files.',
     parameters: {
       file_paths: {
         type: 'array',
@@ -403,7 +402,9 @@ export function defineSearchDocumentsTool(
                     sheet: { type: 'string' },
                     sheetIndex: { type: 'integer' },
                     cellRange: { type: 'string' },
-                    part: { type: 'integer' }
+                    part: { type: 'integer' },
+                    charStart: { type: 'integer' },
+                    charEnd: { type: 'integer' }
                   }
                 },
                 heading: { type: 'string', required: true },
@@ -464,6 +465,10 @@ export function defineSearchDocumentsTool(
             if (indexing.get(source.descriptor.id) === task) indexing.delete(source.descriptor.id)
           }
         }
+        // A persistent index can already hold the same content/schema version
+        // with an absolute path written by an older plugin. Refresh descriptor
+        // metadata even when blocks do not need rebuilding.
+        backend.syncDocumentDescriptor(source.descriptor, Date.now())
         ctx.emit('fs/observed', source.target, { kind: 'present', version: source.version }, exec)
       }
       const now = Date.now()

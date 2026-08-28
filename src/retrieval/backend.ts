@@ -18,6 +18,8 @@ export interface SearchHit {
 export interface RetrievalBackend {
   readonly kind: RetrievalBackendKind
   documentVersion(documentId: string): string | undefined
+  /** Refresh model-facing metadata without rebuilding unchanged blocks. */
+  syncDocumentDescriptor(document: DocumentDescriptor, now: number): void
   replaceDocument(document: DocumentDescriptor, blocks: DocumentBlock[], now: number): void
   /** Optional streaming-friendly replacement used by the model-facing tool. */
   replaceDocumentCooperatively?(document: DocumentDescriptor, blocks: DocumentBlock[], now: number): Promise<void>
@@ -70,6 +72,13 @@ export class MemoryRetrievalBackend implements RetrievalBackend {
 
   documentVersion(documentId: string): string | undefined {
     return this.documents.get(documentId)?.descriptor.version
+  }
+
+  syncDocumentDescriptor(document: DocumentDescriptor, now: number): void {
+    const stored = this.documents.get(document.id)
+    if (stored === undefined || stored.descriptor.version !== document.version) return
+    stored.descriptor = document
+    stored.lastSeenAt = now
   }
 
   replaceDocument(document: DocumentDescriptor, blocks: DocumentBlock[], now: number): void {
@@ -272,6 +281,14 @@ export class SqliteRetrievalBackend implements RetrievalBackend {
   documentVersion(documentId: string): string | undefined {
     const row = this.db.prepare('SELECT version FROM documents WHERE id = ?').get(documentId) as SqliteRow | undefined
     return row === undefined ? undefined : asString(row.version, 'document version')
+  }
+
+  syncDocumentDescriptor(document: DocumentDescriptor, now: number): void {
+    this.db.prepare(`
+      UPDATE documents
+      SET path = ?, format = ?, last_seen_at = ?
+      WHERE id = ? AND version = ?
+    `).run(document.path, document.format, now, document.id, document.version)
   }
 
   replaceDocument(document: DocumentDescriptor, blocks: DocumentBlock[], now: number): void {
