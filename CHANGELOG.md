@@ -6,6 +6,7 @@
 - npm 包名改为计划中的 `@cooberped/dsh-files`，并用 `beta` dist-tag 防止 prerelease 误占 `latest`。
 - DSH peer 依赖收紧为真实验收使用的 `0.1.1-rc.2`；README 明示 Developer Preview 与 Node 持久索引能力边界。
 - 增加社区治理、发布、第三方许可、素材来源和只读 CI 门禁；真实 HR 文件、会话索引及本机日志不进入仓库或 npm 包。
+- 将开发构建依赖 `esbuild` 升至 `0.25.12`，关闭 GHSA-67mh-4wv8-2f99；完整依赖审计无已知漏洞。
 - 该候选只有在 npm scope 所有权、PDF.js Liberation 字体许可口径和截图公开授权三项确认后才允许公开发布。
 
 ## 0.6.0-local.11（独立审计修正候选，未发布）
