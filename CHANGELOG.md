@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.6.0-local.5（本机加固候选，未发布）
+
+### 修复
+
+- XLSX 在解压前解析有界中央目录元数据，拒绝 ZIP64、4 GiB 等伪造展开声明、过量 XML/成员及超长成员名；改用与预检声明一致的 universal/fflate 解压路径，封闭可导致 Harness OOM 的无界分配。
+- XLSX 索引改为一次解析 workbook、内存投影全部 Sheet；真实 605 KiB / 9 Sheet 本机探针由约 158.2 ms、+28.8 MiB RSS 降至约 48.3 ms、+10.9 MiB RSS。
+- `search_documents → read_document` 坐标合同闭环：PDF page、PPTX slide、DOCX/text line 及带引号 XLSX `Sheet!Range` 均可携版本精确展开；检索版本绑定解析/切块 schema，旧索引自动失效。
+- PDF 页面使用 form-feed 内部边界，不再靠正文中的空行猜分页；合法自定义 PPTX slide relationship target 可读取。
+- 达到文档块上限时缓存显式截断标记而不是反复失败；零召回会要求换词、按坐标分页且禁止无证据猜答。
+- SQLite 和 JS 索引均分批构建并让出事件循环，完整投影就绪前不可见；20,000 块本机 SQLite 探针约 140 ms，期间 21 次 timer 轮转，最大间隔约 10.7 ms。
+- 中文/中英混合检索补齐单字 SQL 前置过滤、NFKC 双后端一致性及长 CJK 短语有界 relaxed 回退。
+- 上传 storage key 不再发生 `a/b` 与 `a:b` 折叠碰撞；raw session id 只做有界有效性检查并原样交给 Harness resolver。默认每会话 512 MiB 配额，同会话配额检查和落盘串行；扩展名/目录深度前置校验，digest 提升至 64 bit。
+- 回环信任覆盖 127/8 与 IPv4-mapped 127/8，并验证真实 socket peer，阻断远端伪造 loopback Host；Origin authority 包含端口。
+- 查询词持久化改为 `retrievalQueryLogEnabled: false` 隐私优先默认关闭；JS fallback 在工具输出中明确标为非持久并给出原因。
+
+### 边界
+
+- 官方 Harness WebServer 当前未向插件路由暴露认证身份或 session owner；`trustedHosts`、高熵 session id、目录 HMAC 都不能替代授权。远程部署必须由认证反向代理或未来 Harness 身份合同绑定 session。
+- 解析器内部仍含同步 CPU 段；分块循环和索引写入已协作让出，但极端大文档的强取消/硬 CPU 隔离仍需 `worker_threads`。
+- PPTX 图表缓存、SmartArt、图片 OCR/嵌入对象，以及 DOCX 任意命名 header/footer relationship 尚未纳入本候选；OCR 应保持独立可选插件。
+- 真实 HR 文件只作仓库外本机只读性能/坐标探针，未写入 fixture、索引样本或提交历史；未发布 npm、未推送远端。
+
 ## 0.6.0-local.4（本机索引/PPTX 候选，未发布）
 
 ### 新增

@@ -20,7 +20,7 @@ One package, one line of cordis config. A composer paperclip for uploads, a docu
 
 DeepSeek Harness dual-face plugin. Four capabilities:
 
-- **Upload** — paperclip button, folder button, and drag-and-drop anywhere; `@` file candidates; local session-isolated storage with TTL sweep and sha256 dedup. Files are written under `<session-workdir>/.dsh-filess/<sessionId>/` so the agent's fs backend can always resolve them.
+- **Upload** — paperclip button, folder button, and drag-and-drop anywhere; `@` file candidates; local session-isolated storage with TTL sweep and sha256 dedup. Files are written under `<session-workdir>/.dsh-filess/<storageKey>/` so the agent's fs backend can always resolve them.
 - **Native images** — JPEG/PNG/WebP/GIF uploads are handed to the harness core attachment pipeline (`ctx.attachments` → base64 `image_url`), so any model that declares an `image` input modality actually sees the picture, rendered through the stock native image rail.
 - **On-demand document retrieval** — `search_documents` indexes a content version once, then returns compact evidence with a page, line range or `Sheet!Range`. It prefers FTS5 from Harness' actual Node runtime and automatically falls back to a dependency-free JS memory index.
 - **Document reading** — `read_document` directly reads text / PDF / DOCX / XLSX / PPTX with content sniffing, paged reads, workbook inventory, coordinate-aware A1 ranges, slide-order/speaker-note extraction, an LRU parse cache and cooperative cancellation.
@@ -38,9 +38,9 @@ DeepSeek Harness dual-face plugin. Four capabilities:
 - **Folder batch upload**: selecting or dropping a folder recursively flattens its files, keeps the sub-directory layout under the session dir, and uploads with bounded concurrency — so a whole folder's content lands in one go.
 - **`@` dual-source candidates**: typing `@` lists both uploaded files and workspace files. Both are projected as workspace-relative paths, resolved against the session cwd, so `/Users/...` is no longer disclosed in the conversation.
 - **Native document rail**: compact horizontal cards are colored by the *byte-sniffed* format and show name, size, and `uploading / AI-readable / failed` state. References use Harness' stable `@file` grammar and quote paths containing spaces.
-- **Security rail**: loopback host + same-origin + `sec-fetch-site` triple check; `trustedHosts` for public-domain / reverse-tunnel deploys (bare host matches any port, `host:port` matches exactly, same semantics as `dsh web --trusted-host`); file-name sanitization (control chars, path separators, dot segments and leading dots stripped, truncated by UTF-8 bytes with code-point alignment so emoji never splits a surrogate); unknown session 403; concurrency limit (default 4) → 429; oversized body rejected early with the request drained so keep-alive is not left hanging.
+- **Security rail**: loopback host + same-origin authority + `sec-fetch-site` checks, plus the actual socket peer when implicit loopback trust is used; `trustedHosts` for a deployment-controlled reverse proxy (bare host matches any port, `host:port` matches exactly); file-name sanitization; unknown session 403; concurrency limit (default 4) → 429; oversized and disallowed-extension requests are rejected before buffering the body.
 - **Read hint**: the upload response carries a `readHint` (`cost` / `estimatedChars`) so the client can pre-judge how expensive a file is to read.
-- **Lifecycle**: TTL sweep (default 7 days) covers every observed session workspace and recursively removes folder uploads, with empty dirs reaped, optional per-session storage quota, and sha256 content dedup.
+- **Lifecycle**: TTL sweep (default 7 days) covers every observed session workspace and recursively removes folder uploads, with empty dirs reaped, a default 512 MiB per-session quota (serialized meter + write), and sha256 content dedup.
 
 ### Native images
 
@@ -56,8 +56,9 @@ DeepSeek Harness dual-face plugin. Four capabilities:
 
 - **Index/search, then expand**: for “understand these files first” tasks, call `search_documents(file_paths)` without a query to build the private index and return only a compact inventory. For a concrete question, call `search_documents(file_paths, query)`; it parses only a new content-sha256 version and returns relevant evidence blocks. `read_document` remains the coordinate expander when more context is needed.
 - **Order-correct Chinese retrieval**: contiguous CJK runs become overlapping bigrams queried as an FTS phrase, so `流程绩效` does not match a block containing only `绩效流程`. Single CJK characters use a selected-document substring fallback; ASCII-number tokens such as `Q3` and `IPD` stay whole.
-- **Runtime fallback**: startup probes the actual Harness Node, SQLite version, FTS5 compile option and an ordered-phrase query. Any failure selects the in-process JS backend without changing the tool contract or preventing startup.
-- **Private lifecycle**: the default persistent index is `$DSH_HOME/dsh-files/index` (directory `0700`, database and WAL/SHM files `0600`). A configured pre-existing directory with group/other access is rejected to the memory fallback rather than chmodded. It contains local projections, paths and actual model search queries; document indexes and query logs expire after 30 days by default.
+- **Runtime fallback**: startup probes the actual Harness Node, SQLite version, FTS5 compile option and an ordered-phrase query. Any failure selects the in-process JS backend and returns an explicit non-persistent-backend notice and reason.
+- **Versioned coordinates**: evidence carries a parser/block-schema-bound content version. PDF pages, PPTX slides, quoted XLSX `Sheet!Range` and text/DOCX line ranges can be passed with that version directly to `read_document`; stale versions fail closed.
+- **Private lifecycle**: the default persistent index is `$DSH_HOME/dsh-files/index` (directory `0700`, database and WAL/SHM files `0600`). A configured pre-existing directory with group/other access is rejected to the memory fallback rather than chmodded. Query persistence is off by default and becomes subject to its TTL only when `retrievalQueryLogEnabled` is explicitly enabled.
 
 - **Content sniffing**: PDF header, ZIP central-directory members (docx/xlsx/pptx), UTF-8 (fatal), UTF-16 BOM, UTF-16 without BOM, and GB18030 — all decided from bytes, never the extension. A spoofed extension (an executable or an image renamed to `.pdf`) is rejected.
 - **Encoding chain**: UTF-16 BOM → UTF-8 (fatal, rejects NUL) → GB18030 (fatal) → UTF-16 without BOM (high-confidence guard), so Chinese GBK and BOM-less UTF-16 files both read.
@@ -77,7 +78,7 @@ DeepSeek Harness dual-face plugin. Four capabilities:
 ## Security
 
 - The decoder layer reuses maintained read-only primitives: `pdfjs-dist` for PDF, `fflate + saxen` for DOCX/PPTX ZIP/XML, and pinned `read-excel-file` for XLSX. This plugin owns DOCX paragraph/table/notes projection, PPTX slide/notes projection, spreadsheet ranges, truth boundaries, and the tool protocol.
-- ZIP central-directory probing never expands members; member count and member-name length are capped, and malicious archives are rejected safely.
+- ZIP central-directory probing never expands members; member count/name, per-XML size and aggregate XML expansion are capped. XLSX rejects ZIP64 and hostile size declarations before the decoder can allocate from them.
 - File reads go through `ctx.fs`, inheriting the session sandbox and fs-observation policy with the same privileges as the built-in read tool.
 - The retrieval database stays in a private local directory and must not be synced to cloud storage or committed to Git. The JS fallback is process-local only.
 - Upload content is not hard-allowlisted (all extensions allowed by default); the session sandbox is the backstop.
@@ -108,7 +109,7 @@ dsh plugin --profile web add dsh-files
     uploadTtlMs: 604800000        # upload retention (7 days)
     sweepIntervalMs: 3600000      # sweep interval
     maxConcurrentUploads: 4       # concurrent upload bodies
-    maxUploadBytesPerSession: 0   # per-session storage quota (0 = unlimited)
+    maxUploadBytesPerSession: 536870912 # per-session quota (default 512 MiB; 0 explicitly disables)
     uploadDir: /abs/path          # fallback upload root when there is no sessions service
     trustedHosts: []              # extra trusted upload hosts, e.g. dsh.example.com or dsh.example.com:443 (bare host matches any port); default empty = loopback only
     retrievalEnabled: true        # enable search_documents; read_document remains available when false
@@ -118,11 +119,14 @@ dsh plugin --profile web add dsh-files
     retrievalBlockChars: 1600     # maximum evidence-block characters
     retrievalMaxBlocksPerDocument: 20000
     retrievalDocumentTtlMs: 2592000000
+    retrievalQueryLogEnabled: false # persist model search terms; privacy-first default is off
     retrievalQueryLogTtlMs: 2592000000
     retrievalTimeoutMs: 120000
 ```
 
-`trustedHosts` shares the semantics of `dsh web --trusted-host`: when serving over a public domain / reverse tunnel (Caddy, frp), the browser Origin is `https://domain` while TLS terminates upstream. The default loopback-only upload rail would silently 403 every upload (the old paperclip "did nothing"). Add the deploy domain to `trustedHosts` to restore uploads; the Origin check compares only the host part, so upstream TLS termination still passes.
+`trustedHosts` means “this reverse-proxy authority is an allowed deployment entry”; it is **not user authentication**. The current official Harness WebServer route does not expose request identity or session ownership to plugins, so this plugin cannot prove that a supplied `x-session-id` belongs to the caller; hashing the directory name does not create authorization. Use loopback-only self-hosting, or an authenticated reverse proxy that also constrains session access. TLS may terminate upstream, but Origin hostname/port authority must still match.
+
+Node.js `>=20.12.0` is required. Node 20 can use the complete but process-local JS retrieval backend; a Harness runtime with `node:sqlite` and FTS5 automatically gets the private persistent backend. The actual selection is shown in tool output.
 
 ## Development
 

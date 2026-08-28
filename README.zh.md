@@ -20,7 +20,7 @@
 
 DeepSeek Harness 双面插件（dual-face plugin）。四项能力：
 
-- **上传**：输入框工具栏回形针按钮、文件夹按钮、页面任意位置拖拽；`@` 文件候选；按会话隔离存储到 `<会话工作区>/.dsh-filess/<sessionId>/`，TTL 定期清扫，sha256 内容去重
+- **上传**：输入框工具栏回形针按钮、文件夹按钮、页面任意位置拖拽；`@` 文件候选；按会话隔离存储到 `<会话工作区>/.dsh-filess/<storageKey>/`，TTL 定期清扫，sha256 内容去重
 - **图片原生支持**：上传的 JPEG / PNG / WebP / GIF 走 harness 核心附件管线（`ctx.attachments` → 请求时转 base64 `image_url`），任何声明支持 image 模态的模型都能真正看到图片，用官方原生图片 rail 呈现
 - **文档按需检索**：`search_documents` 首次本地建索引，后续按短查询返回带版本和页码 / 行区间 / `Sheet!Range` 的证据块；优先用 Harness runtime 自带 SQLite FTS5，不可用时自动回退零依赖 JS 内存索引
 - **文档读取**：`read_document` 工具直接读取文本 / PDF / DOCX / XLSX / PPTX，内容嗅探判定真实格式（不信任扩展名），编码回退、分页读取、XLSX 结构盘点与 A1 范围读取、PPTX 页序与 speaker notes、LRU 解析缓存、协作取消
@@ -40,9 +40,9 @@ DeepSeek Harness 双面插件（dual-face plugin）。四项能力：
 - **`@` 双源候选**：输入 `@` 同时列出本会话已上传文件与会话工作区文件；二者都使用**工作区相对路径**，agent 按 session cwd 解析，不再把 `/Users/...` 暴露到对话
 - **原生文档轨道**：横向紧凑卡片按**字节嗅探的真实格式**着色（PDF 红 / DOC 蓝 / XLS 绿 / PPT 橙 / TXT 灰），展示文件名、大小与 `上传中 / AI 可读取 / 失败` 状态；伪装文件（exe 改 .pdf）不按扩展名显示
 - **发送联动**：卡片挂载后按 Harness 官方 `@file` 语法注入引用；含空格路径自动使用 `@"path with spaces"`，模型无需猜测路径边界
-- **安全护栏**：loopback host + same-origin + sec-fetch-site 三重校验；`trustedHosts` 支持公网域名 / 反向隧道部署（裸 host 匹配任意端口、`host:port` 精确匹配，与官方 `--trusted-host` 栅栏同语义）；文件名消毒（控制字符、路径分隔、点段、前导点剥离，按 UTF-8 字节截断并**按码点对齐**，emoji 等 astral 字符不会切出孤立代理，长中文名不触发 ENAMETOOLONG）；未知会话 403；并发限流（默认 4）超限 429；超大请求体提前拒绝并排空，keep-alive 不挂起
+- **安全护栏**：loopback host + same-origin authority + sec-fetch-site 三重校验；依赖默认回环 Host 时同时验证真实 socket peer，远端不能伪造 `Host: 127.0.0.1`；`trustedHosts` 支持受控反向代理部署（裸 host 匹配任意端口、`host:port` 精确匹配）；文件名消毒（控制字符、路径分隔、点段、前导点剥离，按 UTF-8 字节截断并**按码点对齐**，emoji 等 astral 字符不会切出孤立代理，长中文名不触发 ENAMETOOLONG）；未知会话 403；并发限流（默认 4）超限 429；超大请求体及不允许的扩展名在缓冲正文前拒绝
 - **体量提示**：上传响应带 `readHint`（cost / estimatedChars），读前可预判成本
-- **生命周期管理**：TTL 清扫（默认 7 天）覆盖实际发生上传的所有会话工作区，并递归清理文件夹上传目录；空会话目录自动回收；可选会话存储配额（`maxUploadBytesPerSession`，超限 507）；sha256 内容去重（同内容不同名只存一份）
+- **生命周期管理**：TTL 清扫（默认 7 天）覆盖实际发生上传的所有会话工作区，并递归清理文件夹上传目录；空会话目录自动回收；默认每会话 512 MiB 配额（`maxUploadBytesPerSession: 0` 可显式关闭，超限 507），同会话的“计量 + 写入”串行避免并发超额；sha256 内容去重（同内容不同名只存一份）
 
 ### 图片原生支持
 
@@ -58,9 +58,9 @@ DeepSeek Harness 双面插件（dual-face plugin）。四项能力：
 
 - **先索引/检索、再展开**：“先理解这些文件，稍后再讨论”时调用不带 query 的 `search_documents(file_paths)`，只建私有索引并返回紧凑清单，不把正文塞进上下文；有具体问题时调用 `search_documents(file_paths, query)`，模型仅在需要更多上下文时用 `read_document` 展开对应坐标
 - **中文顺序正确**：中文连续段预分成重叠 bigram，并以 FTS5 短语查询保持顺序；`流程绩效` 不会误命中仅含 `绩效流程` 的块。单汉字（如“税”）走选定文档范围内的子串回退，`Q3` / `IPD` 等字母数字保持整词
-- **双后端同合同**：启动自检探测 Harness 实际 Node、SQLite 版本、FTS5 compile option 和有序短语；失败自动使用进程内 JS 索引，工具输出合同不变
-- **坐标与版本**：结果携带内容 sha256 版本和稳定坐标；PDF 为页码、DOCX/text 为行区间、XLSX 为 `Sheet!A1:F40`、PPTX 为 `slide:N`。版本变化时自动重建，坐标仍可交给 `read_document` 回读
-- **私有生命周期**：默认索引位于 `$DSH_HOME/dsh-files/index`（目录 `0700`、数据库及 WAL/SHM 文件 `0600`）；若显式配置的既有目录允许 group/other 访问，插件不会擅自 `chmod`，而是安全回退内存索引。查询日志只写该私有数据库，用于观察模型真实 query，索引与日志默认 30 天清理
+- **双后端同合同**：启动自检探测 Harness 实际 Node、SQLite 版本、FTS5 compile option 和有序短语；失败自动使用进程内 JS 索引，并在工具结果明确提示“非持久后端”及回退原因
+- **坐标与版本**：结果携带“解析/切块 schema + 内容 sha256”版本和稳定坐标；PDF 为页码、DOCX/text 为行区间、XLSX 为带引号规则的 `Sheet!A1:F40`、PPTX 为 `slide:N`。坐标与版本可原样交给 `read_document` 精确展开；内容或 schema 变化时自动重建，旧版本会 fail closed
+- **私有生命周期**：默认索引位于 `$DSH_HOME/dsh-files/index`（目录 `0700`、数据库及 WAL/SHM 文件 `0600`）；若显式配置的既有目录允许 group/other 访问，插件不会擅自 `chmod`，而是安全回退内存索引。查询词持久化默认关闭；仅显式启用 `retrievalQueryLogEnabled` 后写入私有数据库，并按 TTL 清理
 
 - 内容嗅探：PDF 头 / ZIP 中央目录成员（DOCX/XLSX/PPTX）/ UTF-8（fatal）/ UTF-16 BOM / UTF-16 无 BOM / GB18030，全部从字节判定，扩展名伪装（可执行文件、图片改成 .pdf）一律拒绝；上传侧同步嗅探，卡片显示真实格式
 - 编码链：UTF-16 BOM → UTF-8（fatal，拒 NUL）→ GB18030（fatal）→ UTF-16 无 BOM（高置信度守卫），中文 GBK 与无 BOM UTF-16 文件均可读
@@ -68,7 +68,7 @@ DeepSeek Harness 双面插件（dual-face plugin）。四项能力：
 - 行号策略按格式分化：text（代码/配置）带行号供精确定位；PDF/DOCX/XLSX/PPTX 段落流不带行号（省 token）
 - XLSX 结构优先读取：`list_sheets` 返回全部 sheet 名、used range、检测到的有效行与非空单元格计数，但不泄漏单元格内容；随后用 `sheet` 读取指定工作表，或用 `sheet + cell_range`（如 `A1:F40`）做坐标保真的精准读取
 - XLSX 正确性边界：输出携带 `row` 与 Excel 列坐标，空白单元格不再压缩错位；截断、遗漏 sheet 与检测计数均显式标记，禁止把部分窗口描述成“全量工作簿”；支持工作表 XML 编号不从 `sheet1.xml` 开始的合法 OOXML 关系映射
-- PPTX 原生投影：按演示文稿关系声明的真实页序读取，而不是按 ZIP 文件名猜顺序；本地提取 DrawingML 文本和 speaker notes，并以 `slide:N` 建索引。图片 OCR、图表数据、SmartArt 和嵌入对象仍是后续边界
+- PPTX 原生投影：按演示文稿关系声明的真实页序及 relationship target 读取，不要求 `slide1.xml` 这类约定文件名；本地提取 DrawingML 文本和 speaker notes，并以 `slide:N` 建索引。图片 OCR、图表数据、SmartArt 和嵌入对象仍是后续边界
 - 超时可配置：`read_document` 单次执行超时 `readTimeoutMs`（默认 120s），大 PDF 解析不再依赖硬编码
 - 扫描件明示：无文本层的 PDF（扫描件/纯图片）返回显式提示而非空串，模型不会误判为空文件
 - 解析缓存：LRU 双约束（条目数 + 字节预算），键为 `(targetKey, 内容 sha256, format, sheet, listSheets, cellRange)`，**内容或读取范围变化必然失效**
@@ -80,7 +80,7 @@ DeepSeek Harness 双面插件（dual-face plugin）。四项能力：
 ## 安全
 
 - 解码层复用维护中的只读基础库：`pdfjs-dist`（PDF）、`fflate + saxen`（DOCX/PPTX ZIP/XML）和固定版本的 `read-excel-file`（XLSX）；DOCX 段落/表格/脚注、PPTX 页/备注投影、XLSX 范围读取、真实性边界和工具协议由本插件负责
-- ZIP 中央目录探测不展开任何成员，成员数与成员名长度均有上限，恶意归档安全拒绝
+- ZIP 中央目录探测不展开任何成员，成员数、成员名、单 XML 与 XML 总展开量均有上限；XLSX 在交给解压器前拒绝 ZIP64、伪造超大声明及过量 XML，避免按恶意声明进行大内存分配
 - 文件读取走 `ctx.fs`，继承会话沙箱与 fs 观察策略，与内置 read 工具同权
 - 检索数据库只保存在本机私有目录；它包含文档投影、工作区路径和模型实际查询，不应同步到云盘或提交到 Git。JS 回退只存在于当前进程内
 - 上传内容不做格式白名单强制（默认全允许），由会话沙箱兜底
@@ -111,7 +111,7 @@ dsh plugin --profile web add dsh-files
     uploadTtlMs: 604800000        # 上传文件保留时长（7 天）
     sweepIntervalMs: 3600000      # 清扫间隔
     maxConcurrentUploads: 4       # 并发上传数
-    maxUploadBytesPerSession: 0   # 每会话存储配额（0 = 不限）
+    maxUploadBytesPerSession: 536870912 # 每会话存储配额（默认 512 MiB；0 = 显式关闭）
     uploadDir: /abs/path          # 无 sessions 服务时的回退上传根目录
     trustedHosts: []              # 额外信任的上传 Host，如 dsh.example.com 或 dsh.example.com:443（裸 host 匹配任意端口）；默认空 = 仅回环（127.0.0.1/localhost/[::1]）
     retrievalEnabled: true        # 启用 search_documents；关闭后仍保留 read_document
@@ -121,11 +121,14 @@ dsh plugin --profile web add dsh-files
     retrievalBlockChars: 1600     # 证据块字符上限
     retrievalMaxBlocksPerDocument: 20000 # 单文档索引块上限
     retrievalDocumentTtlMs: 2592000000   # 孤儿/未访问索引保留 30 天
-    retrievalQueryLogTtlMs: 2592000000   # 私有 query 日志保留 30 天
+    retrievalQueryLogEnabled: false      # 是否持久化模型检索词；隐私优先默认关闭
+    retrievalQueryLogTtlMs: 2592000000   # 启用后私有 query 日志保留 30 天
     retrievalTimeoutMs: 120000    # search_documents 单次超时
 ```
 
-`trustedHosts` 与 `dsh web --trusted-host` 同源语义：通过公网域名 / 反向隧道（Caddy、frp）部署时，浏览器 Origin 是 `https://域名` 而上游已终结 TLS，主服务栅栏放行但上传栅栏的 loopback-only 检查会静默 403（旧版回形针点了没反应）。把部署域名加进 `trustedHosts` 后上传恢复正常；Origin 校验只比较 host 部分，兼容上游 TLS 终结。
+`trustedHosts` 只表示“这个反向代理 Host 是部署者允许的入口”，**不是用户鉴权**。官方 Harness WebServer 当前不向插件路由提供请求身份或 session owner，因此插件无法单独证明 `x-session-id` 属于调用者；HMAC 目录名也不能建立授权。只在回环地址自用，或在外层使用完成认证并限制 session 的反向代理。通过 Caddy/frp 部署时，可把部署 authority 加进 `trustedHosts`；Origin 的 scheme 可因上游 TLS 终结不同，但 hostname/port authority 必须一致。
+
+运行时要求 Node.js `>=20.12.0`。Node 20 可以使用功能完整但进程内、非持久的 JS 检索后端；支持 `node:sqlite` + FTS5 的 Harness runtime 会自动启用私有持久索引，实际选择会显示在工具结果中。
 
 ## 开发
 
