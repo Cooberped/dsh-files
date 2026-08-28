@@ -60,6 +60,8 @@ export interface DocsConfig {
   retrievalBlockChars: number
   retrievalMaxBlocksPerDocument: number
   retrievalDocumentTtlMs: number
+  /** Persist normalized retrieval queries for local tuning; disabled by default for privacy. */
+  retrievalQueryLogEnabled: boolean
   retrievalQueryLogTtlMs: number
   retrievalTimeoutMs: number
 }
@@ -106,6 +108,7 @@ export const Config = z.object({
   retrievalBlockChars: z.number().default(1600),
   retrievalMaxBlocksPerDocument: z.number().default(20_000),
   retrievalDocumentTtlMs: z.number().default(30 * DAY_MS),
+  retrievalQueryLogEnabled: z.boolean().default(false),
   retrievalQueryLogTtlMs: z.number().default(30 * DAY_MS),
   retrievalTimeoutMs: z.number().default(120_000)
 })
@@ -174,6 +177,7 @@ export function apply(ctx: any, config: DocsConfig): void {
           blockChars: config.retrievalBlockChars,
           maxBlocksPerDocument: config.retrievalMaxBlocksPerDocument,
           documentTtlMs: config.retrievalDocumentTtlMs,
+          queryLogEnabled: config.retrievalQueryLogEnabled,
           queryLogTtlMs: config.retrievalQueryLogTtlMs,
           timeoutMs: config.retrievalTimeoutMs
         },

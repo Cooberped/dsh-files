@@ -86,7 +86,25 @@ export class MemoryRetrievalBackend implements RetrievalBackend {
   }
 
   async replaceDocumentCooperatively(document: DocumentDescriptor, blocks: DocumentBlock[], now: number): Promise<void> {
-    this.replaceDocument(document, blocks, now)
+    const staged: MemoryDocument['blocks'] = []
+    for (let start = 0; start < blocks.length; start += 512) {
+      for (const value of blocks.slice(start, start + 512)) {
+        staged.push({
+          value,
+          headingTokens: tokenizeForIndex(`${value.heading} ${value.coordinate}`),
+          textTokens: tokenizeForIndex(value.text),
+          normalizedText: normalizedSearchText(value)
+        })
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+    // Publish only after the complete projection is ready; searches never see
+    // a half-built in-memory document.
+    this.documents.set(document.id, {
+      descriptor: document,
+      lastSeenAt: now,
+      blocks: staged
+    })
   }
 
   removeDocument(documentId: string): void {

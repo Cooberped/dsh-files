@@ -24,6 +24,8 @@ export interface SearchDocumentsConfig {
   maxBlocksPerDocument: number
   documentTtlMs: number
   queryLogTtlMs: number
+  /** Query text can contain private business terms; persistence is opt-in. */
+  queryLogEnabled?: boolean
   timeoutMs: number
 }
 
@@ -206,6 +208,7 @@ interface SearchDocumentsValue {
   mode: 'index' | 'search'
   query: string
   backend: string
+  backendNotice?: string
   indexedDocuments: number
   documents: Array<{ path: string; format: string; version: string }>
   truncatedDocuments: Array<{ path: string; version: string; maxBlocks: number }>
@@ -249,6 +252,7 @@ function locatorOutput(locator: DocumentLocator | null): SearchResultLocator {
 }
 
 export function renderSearchDocumentsResult(value: SearchDocumentsValue): string {
+  const backendNotice = value.backendNotice === undefined ? [] : [`NOTICE: ${value.backendNotice}`]
   const warnings = value.truncatedDocuments.map((document) =>
     `WARNING: ${document.path} index was truncated at ${document.maxBlocks} blocks [version ${document.version}]. Later content may require read_document coordinate expansion or sequential paging.`
   )
@@ -259,6 +263,7 @@ export function renderSearchDocumentsResult(value: SearchDocumentsValue): string
     )
     return [
       header,
+      ...backendNotice,
       ...documents,
       ...warnings,
       'Index ready. No document body text was returned; use search_documents with a short query when the user asks a concrete question.'
@@ -268,6 +273,7 @@ export function renderSearchDocumentsResult(value: SearchDocumentsValue): string
   if (value.results.length === 0) {
     return [
       header,
+      ...backendNotice,
       ...warnings,
       'No matching evidence found in the selected documents. Retry with shorter or different keywords. If the fact should exist, use read_document with a known coordinate or page sequentially with offset/limit. Do not answer from assumptions when evidence is absent.'
     ].join('\n')
@@ -277,7 +283,7 @@ export function renderSearchDocumentsResult(value: SearchDocumentsValue): string
     result.heading,
     result.text
   ].filter((entry, entryIndex) => entryIndex === 0 || entry.trim() !== '').join('\n'))
-  return [header, ...warnings, ...parts].join('\n\n')
+  return [header, ...backendNotice, ...warnings, ...parts].join('\n\n')
 }
 
 /** Model-facing local retrieval tool. Parsing remains delegated to src/parse/*. */
@@ -319,6 +325,7 @@ export function defineSearchDocumentsTool(
           mode: { type: 'string', required: true, enum: ['index', 'search'] },
           query: { type: 'string', required: true },
           backend: { type: 'string', required: true, enum: ['sqlite-fts5', 'js-memory'] },
+          backendNotice: { type: 'string' },
           indexedDocuments: { type: 'integer', required: true },
           documents: {
             type: 'array',
@@ -389,7 +396,10 @@ export function defineSearchDocumentsTool(
     async execute(args, exec) {
       const input = parseArgs(args, config)
       const cwd = sessionCwd(exec)
-      const { backend } = await createdBackend
+      const { backend, report } = await createdBackend
+      const backendNotice = report.backend === 'js-memory'
+        ? `Non-persistent JS fallback active${report.fallbackReason === undefined ? '' : `: ${report.fallbackReason}`}`
+        : undefined
       const sources: ReadSource[] = []
       let indexedDocuments = 0
       for (const path of input.filePaths) {
@@ -410,7 +420,11 @@ export function defineSearchDocumentsTool(
               signal: exec.signal
             })
             const metadata = documentBlockBuildMetadata(blocks)
-            backend.replaceDocument(source.descriptor, blocks, Date.now())
+            if (backend.replaceDocumentCooperatively !== undefined) {
+              await backend.replaceDocumentCooperatively(source.descriptor, blocks, Date.now())
+            } else {
+              backend.replaceDocument(source.descriptor, blocks, Date.now())
+            }
             indexedMetadata.set(source.descriptor.id, {
               version: source.descriptor.version,
               sheetIndexes: metadata.sheetIndexes
@@ -450,6 +464,7 @@ export function defineSearchDocumentsTool(
           mode: 'index' as const,
           query: '',
           backend: backend.kind,
+          ...(backendNotice === undefined ? {} : { backendNotice }),
           indexedDocuments,
           documents,
           truncatedDocuments,
@@ -458,7 +473,9 @@ export function defineSearchDocumentsTool(
       }
       const plan = buildQueryPlan(input.query)
       const results = backend.search(plan, documentIds, input.limit)
-      backend.logQuery(plan.normalizedQuery, documentIds, results.length, now)
+      if (config.queryLogEnabled === true) {
+        backend.logQuery(plan.normalizedQuery, documentIds, results.length, now)
+      }
       const sourcesById = new Map(sources.map((source) => [source.descriptor.id, source]))
       for (const result of results) {
         if (result.format !== 'xlsx') continue
@@ -477,6 +494,7 @@ export function defineSearchDocumentsTool(
         mode: 'search' as const,
         query: plan.normalizedQuery,
         backend: backend.kind,
+        ...(backendNotice === undefined ? {} : { backendNotice }),
         indexedDocuments,
         documents,
         truncatedDocuments,

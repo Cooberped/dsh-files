@@ -220,6 +220,38 @@ test('cooperative SQLite replacement yields and never exposes a partial index', 
   }
 })
 
+test('cooperative memory replacement yields and publishes atomically', async () => {
+  const descriptor: DocumentDescriptor = {
+    id: 'cooperative-memory',
+    path: '/synthetic/cooperative-memory.txt',
+    format: 'text',
+    version: 'v-cooperative-memory'
+  }
+  const blocks: DocumentBlock[] = Array.from({ length: 1_200 }, (_, index) => ({
+    id: `cooperative-memory-${index}`,
+    documentId: descriptor.id,
+    version: descriptor.version,
+    ordinal: index + 1,
+    coordinate: `line:${index + 1}`,
+    heading: 'cooperative memory indexing',
+    text: `memoryEvidence${index}`
+  }))
+  const backend = new MemoryRetrievalBackend()
+  let anotherTurnRan = false
+  try {
+    const replacement = backend.replaceDocumentCooperatively(descriptor, blocks, 1_000)
+    setImmediate(() => { anotherTurnRan = true })
+    assert.equal(backend.documentVersion(descriptor.id), undefined)
+    assert.deepEqual(searchBackend(backend, 'memoryEvidence1199', [descriptor.id], 5), [])
+    await replacement
+    assert.equal(anotherTurnRan, true)
+    assert.equal(backend.documentVersion(descriptor.id), descriptor.version)
+    assert.equal(searchBackend(backend, 'memoryEvidence1199', [descriptor.id], 5)[0]?.coordinate, 'line:1200')
+  } finally {
+    backend.close()
+  }
+})
+
 const fixtureDir = join(process.cwd(), 'benchmark', 'fixtures', 'generated')
 
 test('retrieval versions bind content to an explicit parser/block schema', () => {
@@ -411,6 +443,12 @@ test('search_documents index mode returns a compact inventory before query retri
   const observations: string[] = []
   let readCount = 0
   const backend = new MemoryRetrievalBackend()
+  let queryLogCalls = 0
+  const originalLogQuery = backend.logQuery.bind(backend)
+  backend.logQuery = (query, documentIds, resultCount, now) => {
+    queryLogCalls += 1
+    originalLogQuery(query, documentIds, resultCount, now)
+  }
   const tool = defineSearchDocumentsTool(
     {
       fs: {
@@ -437,6 +475,7 @@ test('search_documents index mode returns a compact inventory before query retri
       blockChars: 1600,
       maxBlocksPerDocument: 20_000,
       documentTtlMs: 30 * 24 * 60 * 60 * 1000,
+      queryLogEnabled: false,
       queryLogTtlMs: 30 * 24 * 60 * 60 * 1000,
       timeoutMs: 120_000
     },
@@ -463,12 +502,14 @@ test('search_documents index mode returns a compact inventory before query retri
       query: string
       backend: string
       indexedDocuments: number
+      backendNotice?: string
       documents: Array<{ path: string; format: string; version: string }>
       results: unknown[]
     }
     assert.equal(indexed.mode, 'index')
     assert.equal(indexed.query, '')
     assert.equal(indexed.backend, 'js-memory')
+    assert.equal(indexed.backendNotice, 'Non-persistent JS fallback active')
     assert.equal(indexed.indexedDocuments, 4)
     assert.equal(indexed.documents.length, 4)
     assert.deepEqual(indexed.results, [])
@@ -501,6 +542,7 @@ test('search_documents index mode returns a compact inventory before query retri
     const second = await tool.execute(searchArgs, exec) as { indexedDocuments: number }
     assert.equal(second.indexedDocuments, 0)
     assert.equal(readCount, 4, 'unchanged fs versions should not reread full file bytes')
+    assert.equal(queryLogCalls, 0, 'private query persistence stays disabled unless explicitly enabled')
     assert.equal(observations.length, 12)
   } finally {
     backend.close()
