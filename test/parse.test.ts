@@ -68,6 +68,26 @@ async function makeXlsx(rows: Array<Array<string | number>>): Promise<Uint8Array
   return new Uint8Array(await zip.generateAsync({ type: 'nodebuffer' }))
 }
 
+interface CoordinateSheetFixture {
+  name: string
+  relationshipTarget: string
+  partName: string
+  xml: string
+}
+
+async function makeCoordinateXlsx(sheets: CoordinateSheetFixture[]): Promise<Uint8Array> {
+  const zip = new JSZip()
+  const overrides = sheets
+    .map((sheet) => `<Override PartName="/${sheet.partName}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`)
+    .join('')
+  zip.file('[Content_Types].xml', `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${overrides}</Types>`)
+  zip.file('_rels/.rels', `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`)
+  zip.file('xl/workbook.xml', `<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheets.map((sheet, index) => `<sheet name="${sheet.name}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`).join('')}</sheets></workbook>`)
+  zip.file('xl/_rels/workbook.xml.rels', `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((sheet, index) => `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="${sheet.relationshipTarget}"/>`).join('')}</Relationships>`)
+  for (const sheet of sheets) zip.file(sheet.partName, sheet.xml)
+  return new Uint8Array(await zip.generateAsync({ type: 'nodebuffer' }))
+}
+
 function patchCentralOriginalSizes(bytes: Uint8Array, declaredSizes: Record<string, number>): Uint8Array {
   const output = Uint8Array.from(bytes)
   const pending = new Set(Object.keys(declaredSizes))
@@ -242,6 +262,61 @@ test('xlsx workbook parsing can be reused for multiple projections', async () =>
   assert.equal(workbook.length, 1)
   assert.match(projectXlsx(workbook, { sheetRowLimit: 10, listOnly: true }), /Workbook \(1 sheets\)/)
   assert.match(projectXlsx(workbook, { sheetRowLimit: 10, sheet: 1 }), /Alice/)
+})
+
+test('xlsx accepts a bounded sparse grid at a custom relationship target', async () => {
+  const bytes = await makeCoordinateXlsx([{
+    name: 'Sparse',
+    // Attribute entities are decoded by the same SAX contract used by
+    // read-excel-file; a string/regex preflight could easily miss this target.
+    relationshipTarget: 'custom/sparse&#45;A.xml',
+    partName: 'xl/custom/sparse-A.xml',
+    xml: `<?xml version="1.0"?><x:worksheet xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><x:sheetData><x:row custom="first" r="1000"><x:c t="inlineStr" r="CV1000"><x:is><x:t>SPARSE_OK</x:t></x:is></x:c></x:row></x:sheetData></x:worksheet>`
+  }])
+  const workbook = await parseXlsxWorkbook(bytes)
+  assert.equal(workbook[0].data.length, 1000)
+  assert.equal(workbook[0].data[999][99], 'SPARSE_OK')
+  assert.match(projectXlsx(workbook, { sheetRowLimit: 1, listOnly: true }), /used CV1000:CV1000/)
+})
+
+test('xlsx rejects tiny worksheets with extreme row or cell coordinates before decoding', async () => {
+  const namespace = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+  const extremeRow = await makeCoordinateXlsx([{
+    name: 'Extreme row',
+    relationshipTarget: 'custom/row.xml',
+    partName: 'xl/custom/row.xml',
+    xml: `<?xml version="1.0"?><x:worksheet xmlns:x="${namespace}"><x:sheetData><x:row r="1048576"><x:c r="A1048576" t="inlineStr"><x:is><x:t>x</x:t></x:is></x:c></x:row></x:sheetData></x:worksheet>`
+  }])
+  await assert.rejects(
+    parseXlsxWorkbook(extremeRow),
+    /worksheet .*row\.xml.*1048576 logical rows.*limit 200000/
+  )
+
+  const extremeCell = await makeCoordinateXlsx([{
+    name: 'Extreme cell',
+    relationshipTarget: 'custom/cell.xml',
+    partName: 'xl/custom/cell.xml',
+    // Entity-encoded row digits exercise structured attribute decoding.
+    xml: `<?xml version="1.0"?><x:worksheet xmlns:x="${namespace}"><x:sheetData><x:row><x:c t="inlineStr" r="XFD&#49;048576"><x:is><x:t>x</x:t></x:is></x:c></x:row></x:sheetData></x:worksheet>`
+  }])
+  await assert.rejects(
+    parseXlsxWorkbook(extremeCell),
+    /worksheet .*cell\.xml.*1048576x16384 logical grid \(17179869184 cells; limit 2000000\)/
+  )
+})
+
+test('xlsx caps aggregate logical grids across the workbook', async () => {
+  const namespace = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+  const sheets: CoordinateSheetFixture[] = Array.from({ length: 3 }, (_, index) => ({
+    name: `Grid ${index + 1}`,
+    relationshipTarget: `custom/grid-${index + 1}.xml`,
+    partName: `xl/custom/grid-${index + 1}.xml`,
+    xml: `<?xml version="1.0"?><worksheet xmlns="${namespace}"><sheetData><row r="20000"><c r="CV20000" t="inlineStr"><is><t>x</t></is></c></row></sheetData></worksheet>`
+  }))
+  await assert.rejects(
+    parseXlsxWorkbook(await makeCoordinateXlsx(sheets)),
+    /workbook declares 6000000 logical cells \(limit 5000000\)/
+  )
 })
 
 test('utf-8 text decoding', () => {
