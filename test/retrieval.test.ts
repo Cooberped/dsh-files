@@ -99,6 +99,58 @@ test('strict multi-segment queries fall back to ordered phrase groups joined by 
   }
 })
 
+test('a longer single CJK phrase uses a bounded bigram fallback after an exact miss', () => {
+  const fixture = manualFixture()
+  fixture.blocks = [{
+    ...fixture.blocks[0],
+    id: 'partial-cjk',
+    heading: '流程说明',
+    text: '只包含流程，不包含完整查询短语'
+  }]
+  const plan = buildQueryPlan('流程绩效')
+  assert.equal(plan.relaxedFtsQuery, '"流程" OR "程绩" OR "绩效"')
+  const backends = backendPair()
+  try {
+    for (const backend of backends) {
+      backend.replaceDocument(fixture.descriptor, fixture.blocks, 1_000)
+      assert.equal(searchBackend(backend, '流程绩效', [fixture.descriptor.id], 5)[0]?.coordinate, '指标总览!A4:F4')
+    }
+  } finally {
+    for (const backend of backends) backend.close()
+  }
+})
+
+test('SQLite applies NFKC single-character filters before its candidate limit', () => {
+  const descriptor: DocumentDescriptor = {
+    id: 'candidate-cap',
+    path: '/synthetic/candidate-cap.txt',
+    format: 'text',
+    version: 'v1'
+  }
+  const blocks: DocumentBlock[] = Array.from({ length: 240 }, (_, index) => ({
+    id: `candidate-${index}`,
+    documentId: descriptor.id,
+    version: descriptor.version,
+    ordinal: index + 1,
+    coordinate: `line:${index + 1}`,
+    heading: 'Q3 candidate',
+    text: index === 239 ? 'Q3 ⼼ 税 final evidence' : `Q3 distractor ${index}`
+  }))
+  const backends = backendPair()
+  try {
+    for (const backend of backends) backend.replaceDocument(descriptor, blocks, 1_000)
+    for (const query of ['Q3 税', '心']) {
+      const coordinates = backends.map((backend) =>
+        searchBackend(backend, query, [descriptor.id], 5).map((hit) => hit.coordinate)
+      )
+      assert.deepEqual(coordinates[0], coordinates[1], `${query}: backend results diverged`)
+      assert.deepEqual(coordinates[0], ['line:240'])
+    }
+  } finally {
+    for (const backend of backends) backend.close()
+  }
+})
+
 test('replacing a content version removes stale blocks and TTL GC removes private state', () => {
   const fixture = manualFixture()
   const nextDescriptor = { ...fixture.descriptor, version: 'version-2' }

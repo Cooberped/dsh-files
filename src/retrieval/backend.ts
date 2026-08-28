@@ -50,6 +50,14 @@ function countPhrase(tokens: readonly string[], phrase: readonly string[]): numb
   return count
 }
 
+function normalizedSearchText(block: Pick<DocumentBlock, 'heading' | 'coordinate' | 'text'>): string {
+  return `${block.heading}\n${block.coordinate}\n${block.text}`.normalize('NFKC')
+}
+
+function supportsRelaxedFallback(plan: QueryPlan): boolean {
+  return plan.phrases.length >= 2 || (plan.phrases.length === 1 && plan.phrases[0].length >= 3)
+}
+
 /** Dependency-free fallback used when Harness' actual Node runtime lacks FTS5. */
 export class MemoryRetrievalBackend implements RetrievalBackend {
   readonly kind = 'js-memory' as const
@@ -70,7 +78,7 @@ export class MemoryRetrievalBackend implements RetrievalBackend {
         value,
         headingTokens: tokenizeForIndex(`${value.heading} ${value.coordinate}`),
         textTokens: tokenizeForIndex(value.text),
-        normalizedText: `${value.heading}\n${value.coordinate}\n${value.text}`.normalize('NFKC')
+        normalizedText: normalizedSearchText(value)
       }))
     })
   }
@@ -87,7 +95,7 @@ export class MemoryRetrievalBackend implements RetrievalBackend {
   }
 
   search(plan: QueryPlan, documentIds: string[], limit: number): SearchHit[] {
-    const collect = (requireAllPhrases: boolean): SearchHit[] => {
+    const collect = (mode: 'strict' | 'relaxed'): SearchHit[] => {
       const hits: SearchHit[] = []
       for (const documentId of documentIds) {
         const document = this.documents.get(documentId)
@@ -96,7 +104,17 @@ export class MemoryRetrievalBackend implements RetrievalBackend {
           const phraseMatches = plan.phrases.map((phrase) =>
             containsTokenPhrase(block.headingTokens, phrase) || containsTokenPhrase(block.textTokens, phrase)
           )
-          const matchesPhrases = requireAllPhrases ? phraseMatches.every(Boolean) : phraseMatches.some(Boolean)
+          let matchesPhrases: boolean
+          if (mode === 'strict') {
+            matchesPhrases = phraseMatches.every(Boolean)
+          } else if (plan.phrases.length === 1 && plan.phrases[0].length >= 3) {
+            const phrase = plan.phrases[0]
+            matchesPhrases = phrase.some((token) =>
+              block.headingTokens.includes(token) || block.textTokens.includes(token)
+            )
+          } else {
+            matchesPhrases = phraseMatches.some(Boolean)
+          }
           if (!matchesPhrases) continue
           if (!plan.singleCharacters.every((char) => block.normalizedText.includes(char))) continue
           let score = 0
@@ -120,9 +138,9 @@ export class MemoryRetrievalBackend implements RetrievalBackend {
         .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path) || left.coordinate.localeCompare(right.coordinate))
         .slice(0, limit)
     }
-    const strict = collect(true)
-    if (strict.length > 0 || plan.phrases.length < 2) return strict
-    return collect(false)
+    const strict = collect('strict')
+    if (strict.length > 0 || !supportsRelaxedFallback(plan)) return strict
+    return collect('relaxed')
   }
 
   logQuery(query: string, documentIds: string[], resultCount: number, now: number): void {
@@ -197,7 +215,8 @@ export class SqliteRetrievalBackend implements RetrievalBackend {
         ordinal INTEGER NOT NULL,
         coordinate TEXT NOT NULL,
         heading TEXT NOT NULL,
-        text TEXT NOT NULL
+        text TEXT NOT NULL,
+        normalized_text TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS blocks_document_id ON blocks(document_id);
       CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts USING fts5(
@@ -215,8 +234,15 @@ export class SqliteRetrievalBackend implements RetrievalBackend {
         created_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS query_log_created_at ON query_log(created_at);
-      PRAGMA user_version = 1;
+      PRAGMA user_version = 2;
     `)
+    const blockColumns = this.db.prepare('PRAGMA table_info(blocks)').all() as Array<{ name?: unknown }>
+    if (!blockColumns.some((column) => column.name === 'normalized_text')) {
+      // Existing v1 indexes are re-populated by the retrieval schema version
+      // bound into each document version. The empty default keeps migration
+      // atomic until that first re-index completes.
+      this.db.exec("ALTER TABLE blocks ADD COLUMN normalized_text TEXT NOT NULL DEFAULT ''")
+    }
   }
 
   documentVersion(documentId: string): string | undefined {
@@ -240,15 +266,24 @@ export class SqliteRetrievalBackend implements RetrievalBackend {
           last_seen_at = excluded.last_seen_at
       `).run(document.id, document.path, document.format, document.version, now, now)
       const insertBlock = this.db.prepare(`
-        INSERT INTO blocks(id, document_id, version, ordinal, coordinate, heading, text)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO blocks(id, document_id, version, ordinal, coordinate, heading, text, normalized_text)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `)
       const insertFts = this.db.prepare(`
         INSERT INTO blocks_fts(block_id, document_id, heading_tokens, text_tokens)
         VALUES (?, ?, ?, ?)
       `)
       for (const block of blocks) {
-        insertBlock.run(block.id, document.id, document.version, block.ordinal, block.coordinate, block.heading, block.text)
+        insertBlock.run(
+          block.id,
+          document.id,
+          document.version,
+          block.ordinal,
+          block.coordinate,
+          block.heading,
+          block.text,
+          normalizedSearchText(block)
+        )
         insertFts.run(
           block.id,
           document.id,
@@ -281,8 +316,15 @@ export class SqliteRetrievalBackend implements RetrievalBackend {
       .run(now, ...documentIds)
   }
 
-  private ftsCandidates(matchExpression: string, documentIds: string[], candidateLimit: number): SearchHit[] {
+  private ftsCandidates(
+    matchExpression: string,
+    documentIds: string[],
+    candidateLimit: number,
+    singleCharacters: string[] = []
+  ): SearchHit[] {
     if (matchExpression === '' || documentIds.length === 0) return []
+    const characterClauses = singleCharacters.map(() => `b.normalized_text LIKE ? ESCAPE '\\'`)
+    const characterValues = singleCharacters.map((char) => `%${escapeLike(char)}%`)
     const sql = `
       SELECT d.id AS document_id, d.path, d.format, d.version,
              b.coordinate, b.heading, b.text,
@@ -292,10 +334,11 @@ export class SqliteRetrievalBackend implements RetrievalBackend {
       JOIN documents d ON d.id = b.document_id
       WHERE blocks_fts MATCH ?
         AND b.document_id IN (${placeholders(documentIds.length)})
+        ${characterClauses.length === 0 ? '' : `AND ${characterClauses.join(' AND ')}`}
       ORDER BY raw_score ASC, b.ordinal ASC
       LIMIT ?
     `
-    const rows = this.db.prepare(sql).all(matchExpression, ...documentIds, candidateLimit) as SqliteRow[]
+    const rows = this.db.prepare(sql).all(matchExpression, ...documentIds, ...characterValues, candidateLimit) as SqliteRow[]
     return rows.map((row) => ({
       documentId: asString(row.document_id, 'document id'),
       path: asString(row.path, 'path'),
@@ -310,12 +353,10 @@ export class SqliteRetrievalBackend implements RetrievalBackend {
 
   private singleCharacterCandidates(plan: QueryPlan, documentIds: string[], limit: number): SearchHit[] {
     if (plan.singleCharacters.length === 0 || documentIds.length === 0) return []
-    const clauses = plan.singleCharacters.map(() => `(
-      b.heading LIKE ? ESCAPE '\\' OR b.coordinate LIKE ? ESCAPE '\\' OR b.text LIKE ? ESCAPE '\\'
-    )`)
+    const clauses = plan.singleCharacters.map(() => `b.normalized_text LIKE ? ESCAPE '\\'`)
     const values = plan.singleCharacters.flatMap((char) => {
       const pattern = `%${escapeLike(char)}%`
-      return [pattern, pattern, pattern]
+      return [pattern]
     })
     const sql = `
       SELECT d.id AS document_id, d.path, d.format, d.version,
@@ -344,21 +385,9 @@ export class SqliteRetrievalBackend implements RetrievalBackend {
     const candidateLimit = Math.min(Math.max(limit * 32, 200), 2_000)
     let candidates = plan.ftsQuery === ''
       ? this.singleCharacterCandidates(plan, documentIds, candidateLimit)
-      : this.ftsCandidates(plan.ftsQuery, documentIds, candidateLimit)
-    if (plan.ftsQuery !== '' && plan.singleCharacters.length > 0) {
-      candidates = candidates.filter((hit) => {
-        const value = `${hit.heading}\n${hit.coordinate}\n${hit.text}`.normalize('NFKC')
-        return plan.singleCharacters.every((char) => value.includes(char))
-      })
-    }
-    if (candidates.length === 0 && plan.phrases.length >= 2) {
-      candidates = this.ftsCandidates(plan.relaxedFtsQuery, documentIds, candidateLimit)
-      if (plan.singleCharacters.length > 0) {
-        candidates = candidates.filter((hit) => {
-          const value = `${hit.heading}\n${hit.coordinate}\n${hit.text}`.normalize('NFKC')
-          return plan.singleCharacters.every((char) => value.includes(char))
-        })
-      }
+      : this.ftsCandidates(plan.ftsQuery, documentIds, candidateLimit, plan.singleCharacters)
+    if (candidates.length === 0 && supportsRelaxedFallback(plan)) {
+      candidates = this.ftsCandidates(plan.relaxedFtsQuery, documentIds, candidateLimit, plan.singleCharacters)
     }
     return candidates.slice(0, limit)
   }
