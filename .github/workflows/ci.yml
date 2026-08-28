@@ -14,6 +14,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  dco:
+    name: dco
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out pull-request head with history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Require author DCO after the documented bootstrap boundary
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          LEGACY_BOUNDARY: ba6cead1b33a5bc53449918350be7618504076bf
+        run: |
+          start="$BASE_SHA"
+          if git merge-base --is-ancestor "$BASE_SHA" "$LEGACY_BOUNDARY"; then
+            start="$LEGACY_BOUNDARY"
+          fi
+
+          missing=0
+          while IFS= read -r commit; do
+            if ! git show -s --format=%B "$commit" | grep -Eq '^Signed-off-by: .+ <[^<>]+>$'; then
+              echo "::error::Commit $commit is missing its author Signed-off-by trailer"
+              missing=1
+            fi
+          done < <(git rev-list --reverse "$start..HEAD")
+
+          test "$missing" = 0
+
   node20-fallback:
     name: node20-fallback
     runs-on: ubuntu-latest
@@ -55,14 +86,21 @@ jobs:
   required-ci:
     name: required-ci
     if: always()
-    needs: [node20-fallback, release-gate]
+    needs: [dco, node20-fallback, release-gate]
     runs-on: ubuntu-latest
     permissions: {}
     steps:
       - name: Require every CI lane
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          DCO_RESULT: ${{ needs.dco.result }}
           NODE20_RESULT: ${{ needs.node20-fallback.result }}
           RELEASE_RESULT: ${{ needs.release-gate.result }}
         run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            test "$DCO_RESULT" = success
+          else
+            test "$DCO_RESULT" = skipped
+          fi
           test "$NODE20_RESULT" = success
           test "$RELEASE_RESULT" = success
