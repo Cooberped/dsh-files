@@ -5,142 +5,319 @@
 </div>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/readme/hero.svg" width="100%" alt="dsh-files: one package. A composer paperclip for uploads, a document-reading tool for the model, and native image support for vision models.">
+  <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/readme/hero.svg" width="100%" alt="dsh-files turns local files into versioned evidence through upload, retrieval, coordinate reads, and native vision.">
 </p>
 
 # dsh-files
 
-One package, one line of cordis config. A composer paperclip for uploads, a document-reading tool for the model, and native image support that hands JPEG/PNG/WebP/GIF to any vision-capable model.
+**A compact, independent community plugin that gives DeepSeek Harness a complete file-to-evidence loop.**
 
-> **Independent community fork.** This project is based on the MIT-licensed [taxueseek/dsh-files](https://github.com/taxueseek/dsh-files) and is independently maintained by the Cooberped community. It is not affiliated with or endorsed by DeepSeek. DeepSeek and related marks belong to their respective owners.
+Upload several files or a folder from the Web composer, keep parsing and retrieval local, let the model search compact evidence, and expand only the exact page, slide, line range, or spreadsheet range it needs. Raster images stay on Harness' native vision path.
+
+> [!IMPORTANT]
+> **Source beta — not published to npm yet.** The repository is ready for local source use, but `@cooberped/dsh-files@beta` does not exist on npm at this time. Use the [source install](#install-from-source) below. Do not treat the future npm command as currently available.
+
+| Status | Current position |
+| --- | --- |
+| Project | Public source beta, independently maintained by Cooberped |
+| Harness baseline | Tested against npm `@deepseek-ai/dsh@0.1.1-rc.2` with the `web` profile |
+| Runtime acceptance target | OpenCode Go — DeepSeek V4 Flash |
+| npm | **Not published**; package metadata targets `@cooberped/dsh-files@0.6.0-beta.1`; scope ownership, trusted publishing, and the first-release license gate remain open |
+| Compatibility | Newer Harness source trains are not claimed compatible until separately tested |
+
+This is **not an official DeepSeek plugin** and is not affiliated with or endorsed by DeepSeek. It is also not a clean-room rewrite: the MIT-licensed history of [taxueseek/dsh-files](https://github.com/taxueseek/dsh-files) is retained, while Cooberped independently develops the retrieval, coordinate, security, performance, and release layers described here.
+
+## Why this plugin exists
+
+A file picker alone does not make an agent good at documents. If every file is pasted into the prompt, long workbooks and meeting records consume context before the model knows what matters. If the model sees only a local path, it often falls back to Python or shell exploration and repeats expensive reads.
+
+`dsh-files` uses a smaller loop:
+
+1. **Upload once** into the active session workspace.
+2. **Index locally** without placing full documents in model context.
+3. **Retrieve compact evidence** for a concrete question.
+4. **Expand a versioned coordinate** only when more context is needed.
+5. **Answer from evidence**, or say that evidence was not found.
+
+This is the main design contribution: files become addressable evidence rather than prompt baggage.
+
+## What this project adds
+
+| Design choice | What it changes |
+| --- | --- |
+| **One dual-face bundle** | One Harness bundle mounts both the Web composer surface and the host-side model tools. |
+| **Evidence-first tool loop** | `search_documents` inventories or retrieves; `read_document` expands exact evidence instead of repeatedly scanning whole files. |
+| **Reversible, versioned coordinates** | Evidence points to a PDF page, PPTX slide, text/DOCX line range, or quoted XLSX `Sheet!Range`. A stale content/schema version fails closed. |
+| **Order-aware Chinese retrieval** | CJK runs use overlapping bigrams and phrase matching; single characters get a bounded substring fallback; ASCII tokens such as `Q3` remain whole. |
+| **Runtime-adaptive index** | The actual Harness runtime is probed for `node:sqlite` and FTS5. Unsupported runtimes fall back to a dependency-free in-memory JS backend with the same result contract. |
+| **Defensive local ingestion** | Formats are detected from bytes, OOXML expansion and worksheet grids are bounded, paths stay inside the session workspace, and truncation is explicit. |
+| **Small package-owned surface** | The release gate keeps the package-owned unpacked tarball under 1 MiB and excludes benchmarks, source, tests, screenshots, and vendored dependencies. Installed dependency size is separate. |
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/composer.png" alt="DeepSeek Harness composer: paperclip upload button and colored file cards" width="900">
+  <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/readme/architecture.svg" width="100%" alt="dsh-files architecture: composer, local ingest, private retrieval, model tools, and native vision branch.">
 </p>
 
-DeepSeek Harness dual-face plugin. Four capabilities:
+## Capabilities
 
-- **Upload** — paperclip button, folder button, and drag-and-drop anywhere; `@` file candidates; local session-isolated storage with TTL sweep and sha256 dedup. Files are written under `<session-workdir>/.dsh-filess/<storageKey>/` so the agent's fs backend can always resolve them.
-- **Native images** — JPEG/PNG/WebP/GIF uploads are handed to the harness core attachment pipeline (`ctx.attachments` → base64 `image_url`), so any model that declares an `image` input modality actually sees the picture, rendered through the stock native image rail.
-- **On-demand document retrieval** — `search_documents` indexes a content version once, then returns compact evidence with a page, line range or `Sheet!Range`. It prefers FTS5 from Harness' actual Node runtime and automatically falls back to a dependency-free JS memory index.
-- **Document reading** — `read_document` directly reads text / PDF / DOCX / XLSX / PPTX with content sniffing, paged reads, workbook inventory, coordinate-aware A1 ranges, slide-order/speaker-note extraction, an LRU parse cache and cooperative cancellation.
+### Composer and upload
 
-## Features
+- Paperclip **multi-select**, whole-folder selection, and page-level drag and drop.
+- Finder multi-selection merges `DataTransfer.items` and `DataTransfer.files` so mixed document batches are not silently reduced to the first recognized file.
+- Documents are captured before Harness' image-only drop handler; pure JPEG/PNG/WebP/GIF drops stay on the native image path.
+- Bounded parallel uploads (default `4`); one file failure does not cancel the rest of the batch.
+- Compact, byte-sniffed file cards with `uploading`, `AI-readable`, and `failed` states.
+- `@` candidates include both uploaded files and workspace files, projected as workspace-relative paths rather than host absolute paths.
+- Per-session storage quota, SHA-256 deduplication, TTL cleanup, safe file-name normalization, and recursive folder cleanup.
 
-### Upload
+### Local retrieval
 
-- **Three entry points**: a paperclip button in the composer toolbar for multi-select files, a folder button for an entire directory (the browser flattens the tree and preserves relative paths per sub-directory), and drag-and-drop anywhere on the page. Document/directory drops are captured before Harness' image-only handler while pure raster drops remain native. Batch uploads are bounded to 4 concurrent requests, and a per-file failure never blocks the rest.
+- Call `search_documents(file_paths)` without `query` to build/update the private index and return a compact inventory.
+- Add a short `query` to receive ranked evidence blocks with `format`, `coordinate`, and `version`.
+- SQLite FTS5 is used only after a startup capability probe succeeds; otherwise the JS memory backend is selected explicitly.
+- Query persistence is disabled by default.
+- Content versions include the source hash plus parser/block schema identity, so content or projection changes invalidate old evidence.
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/upload-folder-images.png" alt="Batch folder upload: multiple images uploaded at once and shown as a grid" width="900">
-</p>
+### Exact document reads
 
-- **Folder batch upload**: selecting or dropping a folder recursively flattens its files, keeps the sub-directory layout under the session dir, and uploads with bounded concurrency — so a whole folder's content lands in one go.
-- **`@` dual-source candidates**: typing `@` lists both uploaded files and workspace files. Both are projected as workspace-relative paths, resolved against the session cwd, so `/Users/...` is no longer disclosed in the conversation.
-- **Native document rail**: compact horizontal cards are colored by the *byte-sniffed* format and show name, size, and `uploading / AI-readable / failed` state. References use Harness' stable `@file` grammar and quote paths containing spaces.
-- **Security rail**: loopback host + same-origin authority + `sec-fetch-site` checks, plus the actual socket peer when implicit loopback trust is used; `trustedHosts` for a deployment-controlled reverse proxy (bare host matches any port, `host:port` matches exactly); file-name sanitization; unknown session 403; concurrency limit (default 4) → 429; oversized and disallowed-extension requests are rejected before buffering the body.
-- **Read hint**: the upload response carries a `readHint` (`cost` / `estimatedChars`) so the client can pre-judge how expensive a file is to read.
-- **Lifecycle**: TTL sweep (default 7 days) covers every observed session workspace and recursively removes folder uploads, with empty dirs reaped, a default 512 MiB per-session quota (serialized meter + write), and sha256 content dedup.
+- `read_document` detects the real format from content and reads text, PDF, DOCX, XLSX, or PPTX without Python.
+- Long output is paged and character-bounded; every truncation is visible.
+- XLSX supports workbook inventory, one-based sheet selection, coordinate-preserving A1 ranges, merged headers, hidden/sparse sheets, and explicit detected-value counts.
+- PPTX follows presentation relationship order and extracts DrawingML text plus speaker notes.
+- Search coordinates can be passed back with the same version for exact expansion.
+- The system prompt tells the model to use these tools first and only fall back to Python/shell after an explicit error or unsupported-feature notice.
 
-### Native images
+### Native vision handoff
 
-- Uploaded raster images (JPEG / PNG / WebP / GIF) no longer land as a local path that `read_document` cannot read — they go through the harness core attachment pipeline: `createDraftImages` → `addImages` to the composer draft, then `serializeDraftImages` → base64 `image_url` at request time via the provider adapter.
-- **Any image-capable model works**: because the wire form is the supplier-neutral base64 `image_url`, every model that declares `inputModalities: [text, image]` (DeepSeek vision, Dots3, LongCat, OpenRouter vision models, …) actually sees the picture — not just DeepSeek.
-- **Native UI**: the attachment is rendered by the harness's stock `conversation.input.attachments` rail — thumbnail, click-to-zoom lightbox, native remove — so images look native instead of a grey badge card. dsh-files does not inject that slot; it hands the image to the core and lets the official components render it.
+- JPEG, PNG, WebP, and GIF uploads use Harness' native composer attachment rail.
+- Images are serialized through the provider-neutral base64 `image_url` path.
+- Any selected model must still declare image input support; the plugin does not make a text-only model visual.
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/native-image-dialog.png" alt="Vision model reading an uploaded image through the native pipeline" width="900">
-</p>
+## Supported formats and honest boundaries
 
-### Document reading
+| Input | Local projection | Stable coordinate | Current boundary |
+| --- | --- | --- | --- |
+| Text | UTF-8, UTF-16 BOM, high-confidence BOM-less UTF-16, GB18030 | `line:S-E` and optional `chars:S-E` | Other encodings and binary files are rejected |
+| PDF | Text-layer extraction, page-preserving projection | `page:N` with optional local line/character range | No OCR for scanned/image-only pages |
+| DOCX | Main document, paragraphs, tables, headers, footers, footnotes, endnotes | `line:S-E` and optional `chars:S-E` | No image OCR; layout fidelity is not a Word renderer |
+| XLSX | Sheet inventory, cell values, ranges, row/column coordinates | quoted `Sheet!A1:F40` | No formula calculation, chart/shape interpretation, or macro execution |
+| PPTX | Slide-order DrawingML text and speaker notes | `slide:N` with optional local line/character range | No slide-image OCR, chart data, SmartArt, animation, or embedded-object extraction |
+| JPEG/PNG/WebP/GIF | Native Harness image attachment | Harness attachment identity | Requires a vision-capable model; not parsed by `read_document` |
 
-- **Index/search, then expand**: for “understand these files first” tasks, call `search_documents(file_paths)` without a query to build the private index and return only a compact inventory. For a concrete question, call `search_documents(file_paths, query)`; it parses only a new content-sha256 version and returns relevant evidence blocks. `read_document` remains the coordinate expander when more context is needed.
-- **Order-correct Chinese retrieval**: contiguous CJK runs become overlapping bigrams queried as an FTS phrase, so `流程绩效` does not match a block containing only `绩效流程`. Single CJK characters use a selected-document substring fallback; ASCII-number tokens such as `Q3` and `IPD` stay whole.
-- **Runtime fallback**: startup probes the actual Harness Node, SQLite version, FTS5 compile option and an ordered-phrase query. Any failure selects the in-process JS backend and returns an explicit non-persistent-backend notice with a path-free error category; raw diagnostics stay in the local internal logger.
-- **Versioned coordinates**: evidence carries a parser/block-schema-bound content version. PDF pages, PPTX slides, quoted XLSX `Sheet!Range` and text/DOCX line ranges can be passed with that version directly to `read_document`; oversized source lines add a reversible 1-based Unicode code-point `chars:S-E` range. Coordinate expansion requires a non-empty matching version before file I/O. Stale versions fail closed, and legacy XLSX `part:N` coordinates explicitly require a new search.
-- **Private lifecycle**: the default persistent index is `$DSH_HOME/dsh-files/index` (directory `0700`, database and WAL/SHM files `0600`). A configured pre-existing directory with group/other access is rejected to the memory fallback rather than chmodded. Query persistence is off by default and becomes subject to its TTL only when `retrievalQueryLogEnabled` is explicitly enabled.
+## Install from source
 
-- **Content sniffing**: PDF header, ZIP central-directory members (docx/xlsx/pptx), UTF-8 (fatal), UTF-16 BOM, UTF-16 without BOM, and GB18030 — all decided from bytes, never the extension. A spoofed extension (an executable or an image renamed to `.pdf`) is rejected.
-- **Encoding chain**: UTF-16 BOM → UTF-8 (fatal, rejects NUL) → GB18030 (fatal) → UTF-16 without BOM (high-confidence guard), so Chinese GBK and BOM-less UTF-16 files both read.
-- **Paged reads**: line numbers + `offset`/`limit` pagination for long documents; the window character budget is tiered by format (text full, xlsx 3/4, pdf/docx/pptx 1/2, see `maxOutputChars`) and truncates with an explicit marker that counts surviving lines, steering the model to page incrementally.
-- **Line-number policy by format**: text (code/config) carries line numbers for precise location; PDF/DOCX/XLSX/PPTX paragraph streams drop them to save tokens.
-- **XLSX structure-first reads**: `list_sheets` returns every sheet name, used range, detected populated-row count, and non-empty-cell count without exposing cell values. Then use `sheet`, or `sheet + cell_range` (for example `A1:F40`) for a coordinate-preserving targeted read.
-- **XLSX correctness boundary**: rows carry explicit row and Excel-column coordinates, blank cells do not shift values, and every truncation or omitted sheet is explicit. Valid OOXML workbooks whose worksheet relationship does not start at `sheet1.xml` are supported. Before `read-excel-file` can materialize gaps, every worksheet member that the pinned decoder can consume is checked against bounded logical rows/cells per sheet and aggregate cells per workbook, including relationships labelled `TargetMode="External"`; tiny sparse archives cannot request an Excel-edge array.
-- **PPTX native projection**: slides follow the relationship order declared by the deck, not ZIP filename order; DrawingML text and speaker notes are extracted locally and indexed as `slide:N`. Image OCR, chart data, SmartArt and embedded objects remain explicit future boundaries.
-- **Timeout**: `read_document` single-run timeout `readTimeoutMs` (default 120s) so large PDF parses don't rely on a hard-coded value.
-- **Scanned-doc notice**: a PDF with no text layer returns an explicit notice instead of an empty string, so the model doesn't mistake it for an empty file.
-- **Parse cache**: LRU with a dual budget, keyed on `(targetKey, content sha256, format, sheet, listSheets, cellRange)` — content and range changes invalidate it.
-- **Size pre-check**: `stat` first, then reject over `maxFileBytes` with `FS_TOO_LARGE` without reading bytes.
-- **Cooperative cancellation**: parses listen to the execution signal and abort on user cancel / session close.
-- **Tool-first reading**: the system prompt tells the model to use `read_document` directly and not fall back to Python or shell unless the tool returns an explicit error or unsupported-feature notice.
-- **UI projection**: tool results are projected via `presentationMeta` into a `card: 'read'`, reusing the official file-read card (line numbers / highlight / scroll); the model side only receives compact line text.
+Requirements:
 
-## Security
+- DeepSeek Harness CLI with the `web` profile; the validated baseline is npm `@deepseek-ai/dsh@0.1.1-rc.2`.
+- Node.js `>=20.12.0`.
+- `pnpm` available on `PATH`.
 
-- The decoder layer reuses maintained read-only primitives: `pdfjs-dist` for PDF, `fflate + saxen` for DOCX/PPTX ZIP/XML, and pinned `read-excel-file` for XLSX. This plugin owns DOCX paragraph/table/notes projection, PPTX slide/notes projection, spreadsheet ranges, truth boundaries, and the tool protocol.
-- ZIP central-directory probing never expands members; member count/name, per-XML size and aggregate XML expansion are capped. XLSX rejects ZIP64, hostile size declarations and unsafe logical worksheet grids before the decoder can allocate from them.
-- File reads go through `ctx.fs`, inheriting the session sandbox and fs-observation policy with the same privileges as the built-in read tool. `FileSystem.contains(workspaceRoot, target)` is the authoritative containment check when the session has a cwd; `displayPath` is never treated as an authorization boundary. Model-facing paths are projected only from the caller request into a reusable workspace-relative spelling, and any target or spelling that cannot be represented safely fails closed instead of returning an absolute host path.
-- Upload persistence, deletion, quota scanning and TTL sweeping reject pre-existing symlinks and special files below `.dsh-filess`; final creation uses `O_EXCL | O_NOFOLLOW`. Portable Node does not expose a full dirfd/openat chain, so a same-UID process racing ancestor replacement remains an OS-isolation boundary, and quota locking is process-local rather than cross-process.
-- The retrieval database stays in a private local directory and must not be synced to cloud storage or committed to Git. The JS fallback is process-local only.
-- Upload content is not hard-allowlisted (all extensions allowed by default); the session sandbox is the backstop.
+```sh
+git clone https://github.com/Cooberped/dsh-files.git
+cd dsh-files
+pnpm install --frozen-lockfile
+pnpm build
 
-## Install
+# Official Harness profile plugin form: links this checkout into the web profile.
+dsh plugin --profile web add .
+
+# Confirm that the @cooberped/dsh-files bundle layer is present.
+dsh --profile web --dump-config
+
+# Restart after installing or rebuilding.
+dsh web
+```
+
+The local install is a link to this checkout. After changing branches or pulling updates, run `pnpm install --frozen-lockfile`, `pnpm build`, and restart `dsh web`.
+
+Remove it with:
+
+```sh
+dsh plugin --profile web remove @cooberped/dsh-files
+```
+
+The profile/plugin contract follows the official [DeepSeek Harness plugin reference](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/reference/README.md) and [bundle publishing guide](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/basic/publish.md).
+
+### Future npm beta
+
+Only after the repository release gates and npm trusted publishing are complete:
 
 ```sh
 dsh plugin --profile web add @cooberped/dsh-files@beta
 # restart dsh web
 ```
 
+That command is intentionally documented as **future**, not current availability.
+
+## Use it
+
+1. Open the Harness Web composer.
+2. Select several files with the paperclip, choose a folder, or drop files on the page.
+3. Confirm that every intended file has its own card and an `AI-readable` state.
+4. Ask a concrete question. The model should call the tools automatically.
+
+Useful prompts:
+
+```text
+Index these three files first. Do not summarize them yet.
+```
+
+```text
+Across these files, find the definition and formula for the Q3 retention metric.
+Give the source file and exact page, slide, line range, or Sheet!Range for every claim.
+```
+
+```text
+Compare the meeting decision with the workbook target.
+If the documents do not contain enough evidence, say what is missing instead of guessing.
+```
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Cooberped/dsh-files/main/assets/readme/evidence-loop.svg" width="100%" alt="Recommended model evidence loop: inventory, retrieve, expand, and answer from version-checked evidence.">
+</p>
+
+## Model tool contract
+
+### `search_documents`
+
+Use this before reading attached documents.
+
+| Input | Purpose |
+| --- | --- |
+| `file_paths` | One or more relevant PDF/DOCX/XLSX/PPTX/text paths |
+| no `query` | Index changed content and return a compact inventory |
+| `query` | Return ranked evidence blocks for a short keyword or exact phrase |
+
+Every evidence result includes enough information for controlled follow-up:
+
+- projected workspace-relative `path`;
+- detected `format`;
+- evidence `text`;
+- stable `coordinate`;
+- parser/block-schema-bound `version`;
+- backend/status notices without leaking local diagnostic paths.
+
+Zero recall is not permission to guess. The tool directs the model to retry with different terms, read sequentially when justified, or report that the files do not contain evidence.
+
+### `read_document`
+
+Use this to expand a selected result or to perform a deliberate legacy paged read.
+
+| Input | Purpose |
+| --- | --- |
+| `file_path` | Session-resolved document path |
+| `coordinate` + `version` | Exact expansion of evidence returned by `search_documents` |
+| `offset` + `limit` | Controlled sequential pagination |
+| `list_sheets` | XLSX structure inventory without cell values |
+| `sheet` + optional `cell_range` | One worksheet or A1 range |
+
+When `coordinate` is supplied, `version` is mandatory and checked before document content is returned. A changed file or changed projection contract must be searched again.
+
+## Storage and privacy
+
+There are two local stores with different purposes:
+
+| Store | Default | Contains | Lifecycle |
+| --- | --- | --- | --- |
+| Uploads | `<session-workspace>/.dsh-filess/<storageKey>/` | Uploaded file bytes | Per-session quota, SHA-256 dedup, default 7-day TTL sweep |
+| Retrieval index | `$DSH_HOME/dsh-files/index` | Search projection, coordinates, versions; queries only when explicitly enabled | Private permissions, document/query TTL, JS memory fallback when persistence is unavailable |
+
+Important privacy boundary:
+
+- Parsing and indexing are local to the Harness host.
+- The selected evidence returned by tools becomes part of the model conversation and may be sent to the configured model provider.
+- Native image attachments are also sent to the selected vision provider.
+- The plugin does not make an external parsing-service request of its own.
+- Do not sync the retrieval directory to cloud storage or commit it to Git.
+
+## Security model
+
+- **Byte-level truth:** extensions are hints only. PDF headers and OOXML ZIP members determine the parser; known foreign binaries and spoofed files are rejected.
+- **Bounded OOXML:** ZIP member count/name, declared XML sizes, aggregate XML expansion, workbook rows/cells, and sparse-sheet dimensions are capped before parser allocation.
+- **Workspace containment:** reads go through `ctx.fs`; paths must remain in the active session workspace when a session cwd exists.
+- **Safe upload storage:** pre-existing symlinks/special files are rejected; creation uses exclusive/no-follow flags where supported; quotas and deletion remain fail-closed.
+- **Network default:** upload/workspace endpoints trust loopback and same-origin checks by default. `trustedHosts` allows a deployment-controlled reverse proxy.
+
+`trustedHosts` is **not authentication**. The current Harness WebServer plugin contract does not prove that a supplied session ID belongs to the caller. Do not expose this plugin as an unauthenticated public multi-tenant upload service. Use loopback-only self-hosting or an authenticated proxy that also constrains session access.
+
 ## Configuration
 
-```yaml
-- id: upload-toolkit
-  name: '@cooberped/dsh-files'
-  config:
-    maxFileBytes: 25165824        # per-document read byte cap
-    readLimit: 800                # default lines per call (cheap pagination)
-    sheetRowLimit: 200            # rows kept per worksheet
-    maxSheets: 5                  # sheets read per workbook
-    cacheEntries: 16              # parse-cache entry count
-    cacheMaxBytes: 67108864       # parse-cache byte budget
-    maxOutputChars: 24000         # per-call window budget (text full; xlsx 3/4; pdf/docx/pptx 1/2; truncate w/ marker)
-    readTimeoutMs: 120000         # read_document single-run timeout
-    uploadMaxBytes: 25165824      # per-upload byte cap
-    allowedExtensions: []         # upload extension allowlist (empty = all)
-    uploadTtlMs: 604800000        # upload retention (7 days)
-    sweepIntervalMs: 3600000      # sweep interval
-    maxConcurrentUploads: 4       # concurrent upload bodies
-    maxUploadBytesPerSession: 536870912 # per-session quota (default 512 MiB; 0 explicitly disables)
-    uploadDir: /abs/path          # fallback upload root when there is no sessions service
-    trustedHosts: []              # extra trusted upload hosts, e.g. dsh.example.com or dsh.example.com:443 (bare host matches any port); default empty = loopback only
-    retrievalEnabled: true        # enable search_documents; read_document remains available when false
-    # retrievalIndexDir: /absolute/private/path # optional; omit for $DSH_HOME/dsh-files/index (`~` is not expanded)
-    retrievalMaxFiles: 12         # documents per search call
-    retrievalMaxResults: 12       # evidence blocks per call
-    retrievalBlockChars: 1600     # maximum evidence-block characters
-    retrievalMaxBlocksPerDocument: 20000
-    retrievalDocumentTtlMs: 2592000000
-    retrievalQueryLogEnabled: false # persist model search terms; privacy-first default is off
-    retrievalQueryLogTtlMs: 2592000000
-    retrievalTimeoutMs: 120000
-```
-
-`trustedHosts` means “this reverse-proxy authority is an allowed deployment entry”; it is **not user authentication**. The current official Harness WebServer route does not expose request identity or session ownership to plugins, so this plugin cannot prove that a supplied `x-session-id` belongs to the caller; hashing the directory name does not create authorization. Use loopback-only self-hosting, or an authenticated reverse proxy that also constrains session access. TLS may terminate upstream, but Origin hostname/port authority must still match.
-
-Node.js `>=20.12.0` is required. Node 20 uses the complete but process-local JS retrieval backend. A Harness runtime needs Node.js `>=22.5.0`, `node:sqlite`, and FTS5 before the private persistent backend can be selected; startup probes the actual runtime and safely falls back when any capability is missing. The actual selection is shown in tool output.
-
-This beta is tested with `@deepseek-ai/dsh@0.1.1-rc.2` using the `web` profile. DeepSeek Harness is still a Developer Preview, so the beta intentionally pins the tested peer versions instead of claiming broad prerelease compatibility.
-
-## Development
+The bundle ships conservative defaults in [`cordis.patch.yml`](cordis.patch.yml). Harness applies user profile overlays after bundle layers; inspect the composed result before boot:
 
 ```sh
-pnpm install
-pnpm test          # upload / parse / cache regression
-pnpm benchmark:retrieval # 11 synthetic correctness classes on SQLite and JS
-pnpm build         # esbuild client bundle
-pnpm typecheck     # type check
+dsh --profile web --dump-config
 ```
 
-## License
+Common settings:
 
-Project code is licensed under the [MIT License](LICENSE). The original `taxueseek/dsh-files` copyright and history are retained; new contributions are provided under the same license. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for dependency and bundled-data notices. Repository screenshots and third-party marks are not automatically relicensed under MIT; see [assets/README.md](assets/README.md).
+| Setting | Default | Meaning |
+| --- | ---: | --- |
+| `maxFileBytes` | 24 MiB | Maximum bytes for one document read |
+| `uploadMaxBytes` | 24 MiB | Maximum bytes for one upload body |
+| `maxUploadBytesPerSession` | 512 MiB | Session upload quota; `0` explicitly disables the quota |
+| `readLimit` | 2,000 in the bundled patch; schema fallback 800 | Maximum lines returned by one `read_document` call |
+| `maxOutputChars` | 24,000 | Base character window; narrative formats receive smaller format-specific windows |
+| `maxConcurrentUploads` | 4 | Admitted upload bodies |
+| `uploadTtlMs` | 7 days | Uploaded-file retention |
+| `retrievalEnabled` | `true` | Enables `search_documents`; `read_document` remains available when false |
+| `retrievalMaxFiles` | 12 | Files in one search call |
+| `retrievalMaxResults` | 12 | Evidence blocks returned |
+| `retrievalQueryLogEnabled` | `false` | Persist normalized model queries for local tuning |
+| `trustedHosts` | `[]` | Additional reverse-proxy authorities; empty means loopback only |
+
+Less common settings and their authoritative defaults live in [`src/index.ts`](src/index.ts). An explicit `retrievalIndexDir` must be an absolute private path; `~` is not expanded.
+
+### Runtime backend selection
+
+The package accepts Node.js `>=20.12.0`.
+
+- A persistent retrieval index requires the actual Harness runtime to provide Node.js `>=22.5.0`, `node:sqlite`, and FTS5.
+- Node 20 or any failed probe uses the complete but process-local JS backend.
+- Tool output reports the selected backend; the fallback is a supported mode, not a silent partial success.
+
+## Known limits
+
+- Scanned PDFs and images embedded in office files are not OCR'd.
+- Office layout is projected into text/coordinates; it is not rendered pixel-for-pixel.
+- XLSX formulas are not calculated and macros never execute.
+- PPTX charts, SmartArt, animations, and embedded objects are not interpreted.
+- Upload quota locking is process-local, not a cross-process transaction.
+- Portable Node does not expose a complete dirfd/openat chain; a hostile same-UID process racing ancestor replacement remains an OS-isolation boundary.
+- Compatibility is deliberately pinned to the tested Harness prerelease train until a newer runtime passes the same acceptance workflow.
+
+## Development and verification
+
+```sh
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm test
+pnpm benchmark:retrieval
+pnpm license:check
+pnpm package:check
+
+# Stable final candidate only:
+pnpm release:check
+```
+
+The repository benchmark uses deterministic synthetic PDF/DOCX/XLSX/PPTX fixtures. Real business documents, answer sets, and model outputs must stay outside the repository; see [`benchmark/README.md`](benchmark/README.md).
+
+`release:check` covers type checking, both bundles, focused regression tests, dual-backend retrieval correctness, license policy, and the npm tarball contract.
+
+## Contributing
+
+Issues and pull requests are welcome. Contributions are **reviewed and merged by maintainers after required checks**; GitHub does not merge community code automatically.
+
+Before opening a PR:
+
+1. Read [`CONTRIBUTING.md`](CONTRIBUTING.md) and sign off commits for DCO.
+2. Add focused tests for behavior changes.
+3. Run the smallest relevant checks locally.
+4. Keep real documents, credentials, private paths, and model outputs out of Git.
+5. Record every new visual asset in [`assets/README.md`](assets/README.md).
+
+Security reports follow [`SECURITY.md`](SECURITY.md). Release ownership and provenance gates are documented in [`RELEASING.md`](RELEASING.md).
+
+## License, lineage, and marks
+
+Project code and the original SVG documentation graphics are licensed under the [MIT License](LICENSE). Upstream history and copyright notices are retained. Dependency and bundled-data notices are in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+DeepSeek, DeepSeek Harness, OpenCode Go, and other third-party names or marks belong to their respective owners and are used only to identify compatibility or a test target. See [`assets/README.md`](assets/README.md) for asset provenance.
