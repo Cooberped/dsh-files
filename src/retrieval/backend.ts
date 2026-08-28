@@ -19,6 +19,8 @@ export interface RetrievalBackend {
   readonly kind: RetrievalBackendKind
   documentVersion(documentId: string): string | undefined
   replaceDocument(document: DocumentDescriptor, blocks: DocumentBlock[], now: number): void
+  /** Optional streaming-friendly replacement used by the model-facing tool. */
+  replaceDocumentCooperatively?(document: DocumentDescriptor, blocks: DocumentBlock[], now: number): Promise<void>
   removeDocument(documentId: string): void
   touchDocuments(documentIds: string[], now: number): void
   search(plan: QueryPlan, documentIds: string[], limit: number): SearchHit[]
@@ -81,6 +83,10 @@ export class MemoryRetrievalBackend implements RetrievalBackend {
         normalizedText: normalizedSearchText(value)
       }))
     })
+  }
+
+  async replaceDocumentCooperatively(document: DocumentDescriptor, blocks: DocumentBlock[], now: number): Promise<void> {
+    this.replaceDocument(document, blocks, now)
   }
 
   removeDocument(documentId: string): void {
@@ -298,6 +304,90 @@ export class SqliteRetrievalBackend implements RetrievalBackend {
     }
   }
 
+  /**
+   * Replace a large index in bounded SQLite transactions and yield between
+   * them. The document stays on a non-searchable pending version until the
+   * final commit, so concurrent calls never observe a partial index and an
+   * interrupted build is automatically retried by documentVersion().
+   */
+  async replaceDocumentCooperatively(
+    document: DocumentDescriptor,
+    blocks: DocumentBlock[],
+    now: number
+  ): Promise<void> {
+    const pendingVersion = `pending:${document.version}`
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.db.prepare('DELETE FROM blocks_fts WHERE document_id = ?').run(document.id)
+      this.db.prepare('DELETE FROM blocks WHERE document_id = ?').run(document.id)
+      this.db.prepare(`
+        INSERT INTO documents(id, path, format, version, updated_at, last_seen_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          path = excluded.path,
+          format = excluded.format,
+          version = excluded.version,
+          updated_at = excluded.updated_at,
+          last_seen_at = excluded.last_seen_at
+      `).run(document.id, document.path, document.format, pendingVersion, now, now)
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+
+    const insertBlock = this.db.prepare(`
+      INSERT INTO blocks(id, document_id, version, ordinal, coordinate, heading, text, normalized_text)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    const insertFts = this.db.prepare(`
+      INSERT INTO blocks_fts(block_id, document_id, heading_tokens, text_tokens)
+      VALUES (?, ?, ?, ?)
+    `)
+    const batchSize = 512
+    for (let start = 0; start < blocks.length; start += batchSize) {
+      this.db.exec('BEGIN IMMEDIATE')
+      try {
+        for (const block of blocks.slice(start, start + batchSize)) {
+          insertBlock.run(
+            block.id,
+            document.id,
+            document.version,
+            block.ordinal,
+            block.coordinate,
+            block.heading,
+            block.text,
+            normalizedSearchText(block)
+          )
+          insertFts.run(
+            block.id,
+            document.id,
+            tokenizeForIndex(`${block.heading} ${block.coordinate}`).join(' '),
+            tokenizeForIndex(block.text).join(' ')
+          )
+        }
+        this.db.exec('COMMIT')
+      } catch (error) {
+        this.db.exec('ROLLBACK')
+        throw error
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      this.db.prepare(`
+        UPDATE documents
+        SET version = ?, updated_at = ?, last_seen_at = ?
+        WHERE id = ? AND version = ?
+      `).run(document.version, now, now, document.id, pendingVersion)
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
   removeDocument(documentId: string): void {
     this.db.exec('BEGIN IMMEDIATE')
     try {
@@ -334,6 +424,7 @@ export class SqliteRetrievalBackend implements RetrievalBackend {
       JOIN documents d ON d.id = b.document_id
       WHERE blocks_fts MATCH ?
         AND b.document_id IN (${placeholders(documentIds.length)})
+        AND d.version NOT LIKE 'pending:%'
         ${characterClauses.length === 0 ? '' : `AND ${characterClauses.join(' AND ')}`}
       ORDER BY raw_score ASC, b.ordinal ASC
       LIMIT ?
@@ -364,6 +455,7 @@ export class SqliteRetrievalBackend implements RetrievalBackend {
       FROM blocks b
       JOIN documents d ON d.id = b.document_id
       WHERE b.document_id IN (${placeholders(documentIds.length)})
+        AND d.version NOT LIKE 'pending:%'
         AND ${clauses.join(' AND ')}
       ORDER BY b.ordinal ASC
       LIMIT ?

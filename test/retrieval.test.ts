@@ -177,6 +177,38 @@ test('replacing a content version removes stale blocks and TTL GC removes privat
   }
 })
 
+test('cooperative SQLite replacement yields and never exposes a partial index', async () => {
+  const descriptor: DocumentDescriptor = {
+    id: 'cooperative',
+    path: '/synthetic/cooperative.txt',
+    format: 'text',
+    version: 'v-cooperative'
+  }
+  const blocks: DocumentBlock[] = Array.from({ length: 1_200 }, (_, index) => ({
+    id: `cooperative-${index}`,
+    documentId: descriptor.id,
+    version: descriptor.version,
+    ordinal: index + 1,
+    coordinate: `line:${index + 1}`,
+    heading: 'cooperative indexing',
+    text: `uniqueEvidence${index}`
+  }))
+  const backend = new SqliteRetrievalBackend(new DatabaseSync(':memory:'))
+  let anotherTurnRan = false
+  try {
+    const replacement = backend.replaceDocumentCooperatively(descriptor, blocks, 1_000)
+    setImmediate(() => { anotherTurnRan = true })
+    assert.match(backend.documentVersion(descriptor.id) ?? '', /^pending:/u)
+    assert.deepEqual(searchBackend(backend, 'uniqueEvidence1199', [descriptor.id], 5), [])
+    await replacement
+    assert.equal(anotherTurnRan, true)
+    assert.equal(backend.documentVersion(descriptor.id), descriptor.version)
+    assert.equal(searchBackend(backend, 'uniqueEvidence1199', [descriptor.id], 5)[0]?.coordinate, 'line:1200')
+  } finally {
+    backend.close()
+  }
+})
+
 const fixtureDir = join(process.cwd(), 'benchmark', 'fixtures', 'generated')
 
 async function descriptor(file: string, format: DocumentDescriptor['format'], id: string): Promise<{ bytes: Uint8Array; descriptor: DocumentDescriptor }> {
