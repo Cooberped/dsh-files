@@ -677,7 +677,61 @@ test('runtime probe is functional and forced failure selects JS fallback', async
   })
   assert.equal(failed.backend, 'js-memory')
   assert.equal(failed.phraseProbe, false)
-  assert.match(failed.fallbackReason ?? '', /synthetic unavailable runtime/)
+  assert.match(failed.fallbackReason ?? '', /SQLite runtime unavailable \[UNKNOWN_ERROR\]/)
+  assert.match(failed.fallbackReason ?? '', /node:sqlite with FTS5 phrase-search support/)
+  assert.doesNotMatch(failed.fallbackReason ?? '', /synthetic unavailable runtime/)
+})
+
+test('persistent SQLite failure keeps backendNotice actionable without exposing the host path', async () => {
+  const privatePath = '/dev/null/Users/private-account/retrieval-index'
+  const messages: string[] = []
+  const created = await createRetrievalBackend({
+    indexDir: privatePath,
+    logger: {
+      info: (...args) => messages.push(args.join(' ')),
+      warn: (...args) => messages.push(args.join(' '))
+    }
+  })
+  const bytes = new TextEncoder().encode('fallback evidence')
+  const tool = defineSearchDocumentsTool({
+    fs: {
+      resolve: async () => ({ targetKey: FsTargetKey('target:fallback.txt'), displayPath: '/workspace/fallback.txt' }),
+      stat: async () => ({ version: FsVersion('fs-v1'), type: 'file', size: bytes.length }),
+      readBytes: async () => bytes
+    },
+    emit: () => undefined
+  }, {
+    maxFileBytes: 1024,
+    maxFiles: 2,
+    maxResults: 4,
+    blockChars: 128,
+    maxBlocksPerDocument: 8,
+    documentTtlMs: 1000,
+    queryLogTtlMs: 1000,
+    timeoutMs: 1000
+  }, Promise.resolve(created))
+  const exec = {
+    signal: new AbortController().signal,
+    agent: { session: { header: { cwd: '/workspace' } } }
+  } as unknown as Parameters<typeof tool.execute>[1]
+  try {
+    const result = await tool.execute({ file_paths: ['fallback.txt'] }, exec) as {
+      backend: string
+      backendNotice?: string
+      documentCount: number
+      indexedDocuments: number
+    }
+    assert.equal(result.backend, 'js-memory')
+    assert.equal(result.documentCount, 1)
+    assert.equal(result.indexedDocuments, 1, 'fallback remains functional instead of being hidden')
+    assert.match(result.backendNotice ?? '', /Persistent SQLite index unavailable \[ENOTDIR\]/)
+    assert.match(result.backendNotice ?? '', /configured index parent is writable.*mode 0700/)
+    assert.doesNotMatch(JSON.stringify(result), /\/dev\/null|\/Users\/private-account/u)
+    assert.doesNotMatch(created.report.fallbackReason ?? '', /\/dev\/null|\/Users\/private-account/u)
+    assert.ok(messages.some((message) => message.includes(privatePath)), 'raw detail remains available only in internal logs')
+  } finally {
+    created.backend.close()
+  }
 })
 
 test('persistent backend creates a private directory and database', async () => {

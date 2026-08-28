@@ -22,11 +22,33 @@ export type SqliteLoader = () => Promise<{ DatabaseSync: typeof DatabaseSync }>
 interface InternalProbe {
   report: RetrievalRuntimeReport
   sqlite?: { DatabaseSync: typeof DatabaseSync }
+  /** Raw diagnostic is retained only for the internal logger, never tools. */
+  internalFallbackReason?: string
 }
 
 function safeReason(error: unknown): string {
   const value = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
   return value.replace(/[\r\n]+/g, ' ').slice(0, 240)
+}
+
+function errorCategory(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code
+  if (typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/u.test(code)) return code
+  const message = error instanceof Error ? error.message : ''
+  if (message === 'FTS5 ordered bigram phrase probe failed') return 'FTS5_PHRASE_PROBE_FAILED'
+  if (message.includes('expected mode 0700')) return 'INDEX_DIRECTORY_PERMISSIONS'
+  if (message === 'retrieval index path is not a directory') return 'INDEX_DIRECTORY_TYPE'
+  if (error instanceof TypeError) return 'TYPE_ERROR'
+  return 'UNKNOWN_ERROR'
+}
+
+/** Stable, actionable, model-safe fallback reason: never embeds error text or host paths. */
+function modelSafeFallbackReason(error: unknown, scope: 'runtime' | 'persistent-index'): string {
+  const category = errorCategory(error)
+  if (scope === 'runtime') {
+    return `SQLite runtime unavailable [${category}]; using the non-persistent memory index. Verify the Harness runtime provides node:sqlite with FTS5 phrase-search support.`
+  }
+  return `Persistent SQLite index unavailable [${category}]; using the non-persistent memory index. Check that the configured index parent is writable and the private index directory uses mode 0700.`
 }
 
 async function internalProbe(loadSqlite: SqliteLoader): Promise<InternalProbe> {
@@ -64,11 +86,12 @@ async function internalProbe(loadSqlite: SqliteLoader): Promise<InternalProbe> {
     }
   } catch (error) {
     return {
+      internalFallbackReason: safeReason(error),
       report: {
         nodeVersion,
         backend: 'js-memory',
         phraseProbe: false,
-        fallbackReason: safeReason(error)
+        fallbackReason: modelSafeFallbackReason(error, 'runtime')
       }
     }
   }
@@ -121,6 +144,7 @@ export async function createRetrievalBackend(
   const probe = await internalProbe(options.loadSqlite ?? (() => import('node:sqlite')))
   let backend: RetrievalBackend
   let report = probe.report
+  let internalFallbackReason = probe.internalFallbackReason
   if (probe.sqlite !== undefined && probe.report.backend === 'sqlite-fts5') {
     let database: DatabaseSync | undefined
     try {
@@ -137,10 +161,11 @@ export async function createRetrievalBackend(
       await secureSqliteCompanions(dbPath)
     } catch (error) {
       if (database?.isOpen === true) database.close()
+      internalFallbackReason = safeReason(error)
       report = {
         ...probe.report,
         backend: 'js-memory',
-        fallbackReason: `persistent SQLite unavailable: ${safeReason(error)}`
+        fallbackReason: modelSafeFallbackReason(error, 'persistent-index')
       }
       backend = new MemoryRetrievalBackend()
     }
@@ -158,6 +183,9 @@ export async function createRetrievalBackend(
   )
   if (report.fallbackReason !== undefined) {
     options.logger.warn('retrieval fallback active: %s', report.fallbackReason)
+  }
+  if (internalFallbackReason !== undefined) {
+    options.logger.warn('retrieval fallback internal detail: %s', internalFallbackReason)
   }
   return { backend, report }
 }
