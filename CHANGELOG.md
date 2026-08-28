@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.0-local.10（安全与可逆坐标收口，未发布）
+
+### 修复
+
+- 上传、删除、配额扫描和 TTL 清扫对 `.dsh-filess`、会话目录、上传子目录及最终文件逐组件检查；预先存在的符号链接或特殊文件一律 fail-closed。最终文件使用 `O_EXCL | O_NOFOLLOW` 创建，阻断已知的中间 symlink 外写、外删和配额漏算路径。
+- XLSX 在 `read-excel-file` 解码前解析真实 worksheet relationship 与工作表 XML，按单 Sheet 逻辑行数、单 Sheet 逻辑网格和全工作簿逻辑网格设界；`XFD1048576` 等小压缩包/超大稀疏坐标在数组物化前拒绝。
+- 检索 schema 升至 `retrieval-v3`。超长文本行、PDF/PPTX 页内行及 XLSX 行投影使用 1-based Unicode code point `chars:S-E` 坐标；索引与 `read_document` 共用投影规则，可精确回读尾部分片。旧 `,part:N` 坐标明确要求重新检索，不再静默返回错误片段。
+- 同内容版本的持久索引也会刷新当前模型侧路径，清除旧版本遗留的绝对 host path；`read_document` 与 `search_documents` 统一输出 session cwd 相对路径，resolved target 位于 cwd 外时 fail-closed。
+
+### 明确边界
+
+- 纯 Node 路径 API 没有可移植的 `dirfd/openat/unlinkat` 链；同 UID 恶意进程在最后一次检查与 syscall 之间瞬时替换祖先目录的 TOCTOU 不能声明为原子解决。会话写锁也只覆盖单进程，多 Harness 进程共享同一 storage root 时配额检查并非跨进程事务。
+- 稀疏 XLSX 使用固定安全上界，会拒绝少数合法但异常巨大的工作簿；这是避免解码器按逻辑坐标物化超大数组的有意 fail-closed 取舍。
+- 本候选仅供本机自用稳定性验证；未发布 npm、未推送远端。
+
 ## 0.6.0-local.9（工作区路径重投影，未发布）
 
 ### 修复

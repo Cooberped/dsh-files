@@ -59,7 +59,7 @@ DeepSeek Harness 双面插件（dual-face plugin）。四项能力：
 - **先索引/检索、再展开**：“先理解这些文件，稍后再讨论”时调用不带 query 的 `search_documents(file_paths)`，只建私有索引并返回紧凑清单，不把正文塞进上下文；有具体问题时调用 `search_documents(file_paths, query)`，模型仅在需要更多上下文时用 `read_document` 展开对应坐标
 - **中文顺序正确**：中文连续段预分成重叠 bigram，并以 FTS5 短语查询保持顺序；`流程绩效` 不会误命中仅含 `绩效流程` 的块。单汉字（如“税”）走选定文档范围内的子串回退，`Q3` / `IPD` 等字母数字保持整词
 - **双后端同合同**：启动自检探测 Harness 实际 Node、SQLite 版本、FTS5 compile option 和有序短语；失败自动使用进程内 JS 索引，并在工具结果明确提示“非持久后端”及回退原因
-- **坐标与版本**：结果携带“解析/切块 schema + 内容 sha256”版本和稳定坐标；PDF 为页码、DOCX/text 为行区间、XLSX 为带引号规则的 `Sheet!A1:F40`、PPTX 为 `slide:N`。坐标与版本可原样交给 `read_document` 精确展开；内容或 schema 变化时自动重建，旧版本会 fail closed
+- **坐标与版本**：结果携带“解析/切块 schema + 内容 sha256”版本和稳定坐标；PDF 为页码、DOCX/text 为行区间、XLSX 为带引号规则的 `Sheet!A1:F40`、PPTX 为 `slide:N`；超长源行附带 1-based Unicode code point `chars:S-E` 可逆范围。坐标与版本可原样交给 `read_document` 精确展开；内容或 schema 变化时自动重建，旧版本会 fail closed，旧 XLSX `part:N` 坐标会明确要求重新检索
 - **私有生命周期**：默认索引位于 `$DSH_HOME/dsh-files/index`（目录 `0700`、数据库及 WAL/SHM 文件 `0600`）；若显式配置的既有目录允许 group/other 访问，插件不会擅自 `chmod`，而是安全回退内存索引。查询词持久化默认关闭；仅显式启用 `retrievalQueryLogEnabled` 后写入私有数据库，并按 TTL 清理
 
 - 内容嗅探：PDF 头 / ZIP 中央目录成员（DOCX/XLSX/PPTX）/ UTF-8（fatal）/ UTF-16 BOM / UTF-16 无 BOM / GB18030，全部从字节判定，扩展名伪装（可执行文件、图片改成 .pdf）一律拒绝；上传侧同步嗅探，卡片显示真实格式
@@ -67,7 +67,7 @@ DeepSeek Harness 双面插件（dual-face plugin）。四项能力：
 - 分页读取：行号 + offset/limit 分页，长文档按需翻页；窗口字符预算按格式**差异化分级**（text 满额、xlsx 3/4、pdf/docx/pptx 1/2，见 `maxOutputChars`），超限截断并显式标记剩余行数，引导模型翻页增量
 - 行号策略按格式分化：text（代码/配置）带行号供精确定位；PDF/DOCX/XLSX/PPTX 段落流不带行号（省 token）
 - XLSX 结构优先读取：`list_sheets` 返回全部 sheet 名、used range、检测到的有效行与非空单元格计数，但不泄漏单元格内容；随后用 `sheet` 读取指定工作表，或用 `sheet + cell_range`（如 `A1:F40`）做坐标保真的精准读取
-- XLSX 正确性边界：输出携带 `row` 与 Excel 列坐标，空白单元格不再压缩错位；截断、遗漏 sheet 与检测计数均显式标记，禁止把部分窗口描述成“全量工作簿”；支持工作表 XML 编号不从 `sheet1.xml` 开始的合法 OOXML 关系映射
+- XLSX 正确性边界：输出携带 `row` 与 Excel 列坐标，空白单元格不再压缩错位；截断、遗漏 sheet 与检测计数均显式标记，禁止把部分窗口描述成“全量工作簿”；支持工作表 XML 编号不从 `sheet1.xml` 开始的合法 OOXML 关系映射；在 `read-excel-file` 物化空洞前限制单 Sheet 逻辑行/网格与全工作簿逻辑网格，阻断小压缩包声明 Excel 边界稀疏坐标导致的大数组分配
 - PPTX 原生投影：按演示文稿关系声明的真实页序及 relationship target 读取，不要求 `slide1.xml` 这类约定文件名；本地提取 DrawingML 文本和 speaker notes，并以 `slide:N` 建索引。图片 OCR、图表数据、SmartArt 和嵌入对象仍是后续边界
 - 超时可配置：`read_document` 单次执行超时 `readTimeoutMs`（默认 120s），大 PDF 解析不再依赖硬编码
 - 扫描件明示：无文本层的 PDF（扫描件/纯图片）返回显式提示而非空串，模型不会误判为空文件
@@ -80,8 +80,9 @@ DeepSeek Harness 双面插件（dual-face plugin）。四项能力：
 ## 安全
 
 - 解码层复用维护中的只读基础库：`pdfjs-dist`（PDF）、`fflate + saxen`（DOCX/PPTX ZIP/XML）和固定版本的 `read-excel-file`（XLSX）；DOCX 段落/表格/脚注、PPTX 页/备注投影、XLSX 范围读取、真实性边界和工具协议由本插件负责
-- ZIP 中央目录探测不展开任何成员，成员数、成员名、单 XML 与 XML 总展开量均有上限；XLSX 在交给解压器前拒绝 ZIP64、伪造超大声明及过量 XML，避免按恶意声明进行大内存分配
-- 文件读取走 `ctx.fs`，继承会话沙箱与 fs 观察策略，与内置 read 工具同权
+- ZIP 中央目录探测不展开任何成员，成员数、成员名、单 XML 与 XML 总展开量均有上限；XLSX 在交给解码器前拒绝 ZIP64、伪造超大声明、过量 XML 与危险逻辑网格，避免按恶意声明进行大内存分配
+- 文件读取走 `ctx.fs`，继承会话沙箱与 fs 观察策略，与内置 read 工具同权；模型侧路径从 resolved target 派生并投影为 session cwd 相对路径，resolved target 位于工作区外时 fail-closed，不回传绝对 host path
+- 上传落盘、删除、配额扫描与 TTL 清扫会拒绝 `.dsh-filess` 下预先存在的符号链接和特殊文件，最终文件使用 `O_EXCL | O_NOFOLLOW` 创建。纯 Node 没有完整可移植的 dirfd/openat 链，因此同 UID 进程抢占祖先目录的 syscall 竞态仍属于 OS 隔离边界；配额锁也仅限单进程，不宣称跨 Harness 进程事务
 - 检索数据库只保存在本机私有目录；它包含文档投影、工作区路径和模型实际查询，不应同步到云盘或提交到 Git。JS 回退只存在于当前进程内
 - 上传内容不做格式白名单强制（默认全允许），由会话沙箱兜底
 
