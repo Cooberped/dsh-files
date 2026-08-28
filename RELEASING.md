@@ -29,14 +29,20 @@ Before the first public release, configure and verify:
   relevant format tags so the plugin is discoverable;
 - `main` requires a pull request, required status checks, resolved
   conversations, and signed DCO commits;
+- because GitHub's dependency-diff API rejects forks, the required
+  `dependency-review` workflow uses the native action only for a detached
+  repository and otherwise enforces the lockfile, production-license policy,
+  and high-severity production audit locally in CI;
 - while the project has only one human maintainer, required approvals remain 0
   so that the author is not forced to self-approve; after a second independent
   maintainer is established, require at least one approval and Code Owner
   review;
 - force pushes and branch deletion are blocked;
-- CODEOWNERS review is required for security, release, dependency, and core
-  runtime changes;
-- squash merge is enabled; automatic branch deletion is recommended;
+- after a second independent maintainer is established, CODEOWNERS review is
+  required for security, release, dependency, and core runtime changes;
+- the one-time bootstrap PR may use a merge commit to retain the imported
+  development history; enable squash-only merges immediately afterward;
+- automatic branch deletion is enabled;
 - GitHub Private Vulnerability Reporting is enabled;
 - the release environment requires maintainer approval;
 - npm trusted publishing/provenance is configured before tokenless publication;
