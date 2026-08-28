@@ -8,7 +8,10 @@ const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 
 await build({
   entryPoints: ['src/client/index.tsx'],
   bundle: true,
-  format: 'iife',
+  // The ModuleLoader factory already provides CommonJS `module` / `exports`.
+  // Let esbuild emit the entry exports into that object directly instead of
+  // treating `module` as an accidental ESM global.
+  format: 'cjs',
   platform: 'browser',
   target: ['es2020'],
   outfile: 'lib/client.js',

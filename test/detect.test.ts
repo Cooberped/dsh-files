@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import JSZip from 'jszip'
-import { sniffFormat, zipMemberNames, formatFromExtension, SUPPORTED_FORMATS } from '../src/detect.ts'
+import { sniffFormat, zipMemberNames, zipMembers, formatFromExtension, SUPPORTED_FORMATS } from '../src/detect.ts'
 
 async function makeZip(files: Record<string, string>): Promise<Uint8Array> {
   const zip = new JSZip()
@@ -23,6 +23,12 @@ const XLSX_FILES = {
   'xl/worksheets/sheet1.xml': '<worksheet/>'
 }
 
+const PPTX_FILES = {
+  '[Content_Types].xml': '<Types/>',
+  'ppt/presentation.xml': '<p:presentation/>',
+  'ppt/slides/slide1.xml': '<p:sld/>'
+}
+
 test('pdf signature wins over a spoofed .docx hint', async () => {
   const bytes = new TextEncoder().encode('%PDF-1.7\n1 0 obj\n%%EOF')
   assert.equal(sniffFormat(bytes, 'docx'), 'pdf')
@@ -36,6 +42,11 @@ test('zip with word/ members is docx', async () => {
 test('zip with xl/ members is xlsx', async () => {
   const bytes = await makeZip(XLSX_FILES)
   assert.equal(sniffFormat(bytes), 'xlsx')
+})
+
+test('zip with ppt/ members is pptx', async () => {
+  const bytes = await makeZip(PPTX_FILES)
+  assert.equal(sniffFormat(bytes), 'pptx')
 })
 
 test('zip with neither word/ nor xl/ members is rejected', async () => {
@@ -89,17 +100,46 @@ test('zipMemberNames returns member list and rejects truncated archives', async 
   assert.equal(zipMemberNames(new Uint8Array([0x50, 0x4b, 0x03, 0x04])), null)
 })
 
+test('zipMembers exposes bounded central-directory size metadata', async () => {
+  const bytes = await makeZip({ 'xl/workbook.xml': '<workbook/>' })
+  const members = zipMembers(bytes)
+  assert.ok(members !== null)
+  const workbook = members.find((member) => member.name === 'xl/workbook.xml')
+  assert.ok(workbook !== undefined)
+  assert.equal(workbook.nameBytes, 'xl/workbook.xml'.length)
+  assert.equal(workbook.originalSize, new TextEncoder().encode('<workbook/>').length)
+  assert.ok(workbook.compressedSize > 0)
+})
+
+test('zipMembers rejects declared member counts above the metadata bound', async () => {
+  const bytes = Uint8Array.from(await makeZip({ 'xl/workbook.xml': '<workbook/>' }))
+  let eocd = -1
+  for (let offset = bytes.length - 22; offset >= 0; offset -= 1) {
+    if (bytes[offset] === 0x50 && bytes[offset + 1] === 0x4b && bytes[offset + 2] === 0x05 && bytes[offset + 3] === 0x06) {
+      eocd = offset
+      break
+    }
+  }
+  assert.ok(eocd >= 0)
+  for (const offset of [eocd + 8, eocd + 10]) {
+    bytes[offset] = 0x01
+    bytes[offset + 1] = 0x10 // 4097, one above the supported bound.
+  }
+  assert.equal(zipMembers(bytes), null)
+})
+
 test('formatFromExtension covers the supported set', () => {
   assert.equal(formatFromExtension('report.pdf'), 'pdf')
   assert.equal(formatFromExtension('a.DOCX'), 'docx')
   assert.equal(formatFromExtension('data.xlsx'), 'xlsx')
+  assert.equal(formatFromExtension('slides.PPTX'), 'pptx')
   assert.equal(formatFromExtension('notes.md'), 'text')
   assert.equal(formatFromExtension('noextension'), null)
   assert.equal(formatFromExtension('evil.exe'), null)
 })
 
 test('SUPPORTED_FORMATS matches the enum union', () => {
-  assert.deepEqual([...SUPPORTED_FORMATS].sort(), ['docx', 'pdf', 'text', 'xlsx'])
+  assert.deepEqual([...SUPPORTED_FORMATS].sort(), ['docx', 'pdf', 'pptx', 'text', 'xlsx'])
 })
 
 test('utf-16 without BOM is detected as text', () => {

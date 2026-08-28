@@ -4,3 +4,9 @@ node_modules/
 .dsh-uploads/
 .trash/
 pnpm-workspace.yaml
+benchmark/local/
+benchmark/*.real.json
+# Runtime-only NFD aliases are generated beside the three tracked NFC files.
+# Tracked files remain tracked; this only hides aliases that Git/macOS cannot
+# represent portably across NFC/NFD-sensitive filesystems.
+benchmark/fixtures/generated/*

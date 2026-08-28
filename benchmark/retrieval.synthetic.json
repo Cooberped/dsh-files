@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "privacy": "synthetic-only",
+  "cases": [
+    {
+      "id": "pdf-rule-page",
+      "query": "R-42",
+      "mustFind": [{ "document": "kickoff-pdf", "coordinatePrefix": "page:2", "facts": ["R-42", "MET-HR-02"] }]
+    },
+    {
+      "id": "docx-action-owner",
+      "query": "AX-17 Synthetic HRBP",
+      "mustFind": [{ "document": "meeting-docx", "coordinatePrefix": "line", "facts": ["AX-17", "Synthetic HRBP"] }]
+    },
+    {
+      "id": "xlsx-exact-cell",
+      "query": "Q3 人力流程及时率",
+      "mustFind": [{ "document": "metrics-xlsx", "coordinate": "指标总览!A4:F4", "facts": ["MET-HR-02", "95%"] }]
+    },
+    {
+      "id": "xlsx-hidden-cross-sheet",
+      "query": "R-42 AX-17",
+      "mustFind": [{ "document": "metrics-xlsx", "coordinate": "隐藏映射!A2:C2", "facts": ["R-42", "AX-17", "MET-HR-02"] }]
+    },
+    {
+      "id": "cross-file-chain",
+      "query": "R-42",
+      "mustFind": [
+        { "document": "kickoff-pdf", "coordinatePrefix": "page:2", "facts": ["R-42", "MET-HR-02"] },
+        { "document": "meeting-docx", "coordinatePrefix": "line", "facts": ["R-42", "AX-17"] },
+        { "document": "metrics-xlsx", "coordinate": "隐藏映射!A2:C2", "facts": ["R-42", "AX-17", "MET-HR-02"] }
+      ]
+    },
+    {
+      "id": "sparse-coordinate",
+      "query": "SPARSE-ANCHOR-200",
+      "mustFind": [{ "document": "metrics-xlsx", "coordinate": "稀疏数据!A200:Z200", "facts": ["SPARSE-ANCHOR-200"] }]
+    },
+    {
+      "id": "ordered-cjk-phrase",
+      "query": "流程绩效",
+      "mustFind": [{ "document": "metrics-xlsx", "coordinate": "指标总览!A4:F4", "facts": ["流程绩效", "MET-HR-02"] }],
+      "mustNotContain": ["DISTRACTOR-REVERSED"]
+    },
+    {
+      "id": "single-han-character",
+      "query": "税",
+      "mustFind": [{ "document": "metrics-xlsx", "coordinate": "指标总览!A5:F5", "facts": ["MET-TAX-01", "99%"] }]
+    },
+    {
+      "id": "ascii-number-token",
+      "query": "Q3 IPD",
+      "mustFind": [{ "document": "metrics-xlsx", "coordinate": "流程域分工!A3:D3", "facts": ["IPD", "Synthetic PMO"] }]
+    },
+    {
+      "id": "pptx-slide-notes",
+      "query": "Decision D-26 Synthetic Strategy PMO",
+      "mustFind": [{ "document": "strategy-pptx", "coordinate": "slide:2", "facts": ["Decision D-26", "Synthetic Strategy PMO"] }]
+    },
+    {
+      "id": "negative-no-answer",
+      "query": "Q4 budget",
+      "mustFind": [{ "document": "kickoff-pdf", "coordinatePrefix": "page:3", "facts": ["No Q4 budget target is defined"] }]
+    }
+  ]
+}

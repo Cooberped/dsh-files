@@ -13,7 +13,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
-const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '::1'])
 
 /** Split a raw Host/Origin into host (with port), hostname and port; null for malformed input. */
 export function parseHost(raw: string): { host: string; hostname: string; port: string | null } | null {
@@ -28,7 +28,19 @@ export function parseHost(raw: string): { host: string; hostname: string; port: 
 }
 
 function isLoopbackHostname(hostname: string): boolean {
-  return LOOPBACK_HOSTNAMES.has(hostname)
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  if (LOOPBACK_HOSTNAMES.has(normalized)) return true
+  // RFC 1122 reserves the complete 127/8 block for IPv4 loopback. WHATWG URL
+  // canonicalizes shorthand/numeric forms before this point.
+  if (/^127(?:\.\d{1,3}){3}$/.test(normalized)) return true
+  // WHATWG URL canonicalizes IPv4-mapped IPv6 to ::ffff:7fXX:XXXX. Accept
+  // exactly the mapped 127/8 range, not arbitrary mapped private addresses.
+  // socket.remoteAddress may retain the dotted form instead of going through
+  // WHATWG canonicalization.
+  const dottedMapped = /^::ffff:(127(?:\.\d{1,3}){3})$/.exec(normalized)
+  if (dottedMapped !== null) return true
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(normalized)
+  return mapped !== null && (Number.parseInt(mapped[1], 16) >>> 8) === 127
 }
 
 /**
@@ -55,15 +67,28 @@ export function networkGuard(req: IncomingMessage, trustedHosts: string[] = []):
   const rawHost = String(req.headers?.host ?? '')
   const parsedHost = parseHost(rawHost)
   if (parsedHost === null) return 'forbidden: malformed host'
-  if (!isLoopbackHostname(parsedHost.hostname) && !matchesTrusted(parsedHost, trustedHosts)) {
+  const loopbackHost = isLoopbackHostname(parsedHost.hostname)
+  const trustedHost = matchesTrusted(parsedHost, trustedHosts)
+  if (!loopbackHost && !trustedHost) {
     return 'forbidden: non-loopback host'
+  }
+  // Host is client-controlled. On a real node:http socket, require the peer to
+  // be loopback too when relying on the implicit loopback trust path; otherwise
+  // a remote client bound through 0.0.0.0 could simply forge Host: 127.0.0.1.
+  // IPC/test carriers may not expose remoteAddress, so absence keeps the
+  // official host-only compatibility path. Explicit trustedHosts remain the
+  // opt-in route for a deployment-controlled reverse proxy or tunnel; this
+  // host allowlist is not itself client authentication.
+  const remoteAddress = req.socket?.remoteAddress
+  if (loopbackHost && !trustedHost && remoteAddress !== undefined && !isLoopbackHostname(remoteAddress)) {
+    return 'forbidden: non-loopback peer'
   }
   const origin = req.headers?.origin
   if (origin !== undefined) {
     const parsedOrigin = parseHost(origin)
     // Origin 只比较 host 部分：TLS 在上游终结时 socket 是明文 http 而浏览器
     // Origin 是 https，scheme 参与比较会误杀同一部署（与官方栅栏一致）。
-    if (parsedOrigin === null || parsedOrigin.hostname !== parsedHost.hostname) {
+    if (parsedOrigin === null || parsedOrigin.host !== parsedHost.host) {
       return 'forbidden: cross-origin'
     }
   }

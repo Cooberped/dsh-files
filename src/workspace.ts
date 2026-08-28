@@ -8,7 +8,7 @@ import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { jsonError, networkGuard } from './guard.ts'
-import { sanitizeSessionId } from './upload.ts'
+import { isValidSessionId } from './upload.ts'
 
 /** Directory names skipped at any depth. */
 export const DEFAULT_IGNORED_DIRS: ReadonlySet<string> = new Set([
@@ -156,7 +156,11 @@ export function createWorkspaceFilesHandler(options: WorkspaceFilesOptions) {
       return
     }
     const url = new URL(req.url ?? '/', 'http://localhost')
-    const sessionId = sanitizeSessionId(url.searchParams.get('session') ?? '')
+    const sessionId = url.searchParams.get('session') ?? ''
+    if (!isValidSessionId(sessionId)) {
+      jsonError(res, 400, 'invalid session id')
+      return
+    }
     const cwd = await sessionCwd(sessionId)
     if (cwd === undefined) {
       jsonError(res, 403, 'unknown session')

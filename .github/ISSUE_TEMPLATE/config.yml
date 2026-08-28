@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability / 安全漏洞
+    url: https://github.com/Cooberped/dsh-files/blob/main/SECURITY.md
+    about: Do not disclose vulnerabilities publicly; follow the private reporting policy. / 请勿公开漏洞细节，按私密流程报告。
+  - name: Upstream project / 上游项目
+    url: https://github.com/taxueseek/dsh-files
+    about: Check whether an issue belongs to the upstream project. / 确认问题是否属于上游项目。

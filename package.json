@@ -1,19 +1,30 @@
 {
-  "name": "dsh-files",
-  "version": "0.4.0",
-  "description": "DeepSeek Harness dual-face plugin: a composer file-upload button (paperclip + folder + drag-drop, @ dual-source candidates) with session-isolated storage, TTL sweep and sha256 dedup; native image support that hands JPEG/PNG/WebP/GIF to any image-capable model via the core attachment pipeline; plus a read_document tool (text/PDF/DOCX/XLSX) with content sniffing, GB18030 fallback and byte-budgeted LRU caching.",
+  "name": "@cooberped/dsh-files",
+  "version": "0.6.0-beta.1",
+  "description": "Independent community DeepSeek Harness plugin for secure multi-file upload, native images, local document retrieval, and coordinate-aware text/PDF/DOCX/XLSX/PPTX reading.",
   "keywords": [
-    "deepseek",
-    "harness",
+    "deepseek-harness",
     "dsh",
+    "dsh-plugin",
     "cordis",
-    "plugin",
-    "upload",
-    "attachment",
+    "document-ingestion",
+    "document-parser",
+    "document-retrieval",
+    "file-upload",
     "pdf",
     "docx",
-    "xlsx"
+    "xlsx",
+    "pptx",
+    "fts5"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cooberped/dsh-files.git"
+  },
+  "homepage": "https://github.com/Cooberped/dsh-files#readme",
+  "bugs": {
+    "url": "https://github.com/Cooberped/dsh-files/issues"
+  },
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -25,10 +36,20 @@
     "lib",
     "cordis.patch.yml",
     "CHANGELOG.md",
+    "THIRD_PARTY_NOTICES.md",
     "README.md",
     "README.zh.md"
   ],
   "license": "MIT",
+  "packageManager": "pnpm@10.34.5",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public",
+    "tag": "beta"
+  },
+  "engines": {
+    "node": ">=20.12.0"
+  },
   "dsh": {
     "client": {
       "inject": [
@@ -42,33 +63,53 @@
     }
   },
   "dependencies": {
-    "mammoth": "^1.8.0",
+    "fflate": "0.8.3",
     "pdfjs-dist": "^4.10.38",
-    "read-excel-file": "^5.8.7"
+    "read-excel-file": "9.3.10",
+    "saxen": "11.1.1"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
-    "@deepseek-ai/dsh-client-locale": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-client-ui-conversation": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-client-ui-primitives": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-fs": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-locale": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-runtime": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-fs": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.1.1-rc.2",
     "@deepseek-ai/schemastery": "^3.18.1",
     "react": "^18.2.0"
   },
   "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-client-locale": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-runtime": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-fs": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.1.1-rc.2",
+    "@deepseek-ai/schemastery": "3.18.1",
     "@types/node": "^26.2.0",
     "@types/react": "~18.3.1",
-    "esbuild": "^0.24.2",
+    "esbuild": "^0.25.12",
     "jszip": "^3.10.1",
     "pdf-lib": "^1.17.1",
+    "react": "18.2.0",
     "typescript": "^5.7.2"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node build.mjs",
+    "build": "tsc -p tsconfig.client.json && tsc -p tsconfig.build.json && node build.mjs",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.client.json",
+    "pretest": "node benchmark/generate-fixtures.mjs",
     "test": "node --test",
-    "prepublishOnly": "npm run build && npm test"
+    "benchmark:fixtures": "node benchmark/generate-fixtures.mjs",
+    "benchmark:validate": "node benchmark/generate-fixtures.mjs && node benchmark/validate-fixtures.mjs",
+    "benchmark:retrieval": "node benchmark/generate-fixtures.mjs && node benchmark/run-retrieval.mjs",
+    "benchmark:validate-real": "node benchmark/validate-real-manifest.mjs",
+    "license:check": "node scripts/check-licenses.mjs",
+    "package:check": "node scripts/check-package.mjs",
+    "runtime:smoke": "node scripts/runtime-smoke.mjs",
+    "release:check": "npm run typecheck && npm run build && npm test && npm run benchmark:retrieval && npm run license:check && npm run package:check",
+    "prepublishOnly": "npm run release:check"
   },
   "allowScripts": {
     "esbuild@0.24.2": true

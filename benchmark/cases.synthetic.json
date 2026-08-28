@@ -1,0 +1,151 @@
+{
+  "schemaVersion": 1,
+  "privacy": "synthetic-only",
+  "documents": [
+    {
+      "id": "kickoff-pdf",
+      "file": "atlas-kickoff.pdf",
+      "format": "pdf",
+      "markers": ["SYNTHETIC ONLY", "Rule R-42", "MET-HR-02"]
+    },
+    {
+      "id": "meeting-docx",
+      "file": "流程绩效-Café会议纪要.docx",
+      "format": "docx",
+      "unicodeFilenameAliases": ["流程绩效-Cafe\u0301会议纪要.docx"],
+      "markers": ["合成会议纪要", "AX-17", "Synthetic HRBP", "绩效流程是干扰词"]
+    },
+    {
+      "id": "metrics-xlsx",
+      "file": "atlas-metrics.xlsx",
+      "format": "xlsx",
+      "markers": ["指标总览", "隐藏映射", "SPARSE-ANCHOR-200", "MET-TAX-01"]
+    },
+    {
+      "id": "strategy-pptx",
+      "file": "atlas-strategy.pptx",
+      "format": "pptx",
+      "markers": ["SYNTHETIC Atlas Strategy Deck", "STRAT-26", "Decision D-26", "Synthetic Strategy PMO"]
+    }
+  ],
+  "cases": [
+    {
+      "id": "pdf-rule-page",
+      "queryClass": "exact-page",
+      "question": "规则 R-42 位于 PDF 哪一页，并指向哪个指标？",
+      "expected": {
+        "facts": ["第 2 页", "R-42", "MET-HR-02"],
+        "evidence": [{ "document": "kickoff-pdf", "coordinate": "page:2" }]
+      },
+      "forbiddenFacts": ["MET-HR-01", "第 3 页"]
+    },
+    {
+      "id": "docx-action-owner",
+      "queryClass": "exact-paragraph-table",
+      "question": "会议行动项 AX-17 的负责人是谁？",
+      "expected": {
+        "facts": ["AX-17", "Synthetic HRBP"],
+        "evidence": [{ "document": "meeting-docx", "coordinate": "table:1,row:2" }]
+      },
+      "forbiddenFacts": ["Synthetic PMO"]
+    },
+    {
+      "id": "xlsx-exact-cell",
+      "queryClass": "exact-cell",
+      "question": "Q3 人力流程及时率目标是多少？",
+      "expected": {
+        "facts": ["95%", "MET-HR-02"],
+        "evidence": [{ "document": "metrics-xlsx", "coordinate": "指标总览!F4" }]
+      },
+      "forbiddenFacts": ["90%", "99%"]
+    },
+    {
+      "id": "xlsx-hidden-cross-sheet",
+      "queryClass": "cross-sheet",
+      "question": "隐藏映射中 R-42 通过哪个行动项连接到哪个指标？",
+      "expected": {
+        "facts": ["R-42", "AX-17", "MET-HR-02"],
+        "evidence": [
+          { "document": "metrics-xlsx", "coordinate": "隐藏映射!A2:C2" },
+          { "document": "metrics-xlsx", "coordinate": "流程域分工!C2:D2" }
+        ]
+      },
+      "forbiddenFacts": ["AX-18"]
+    },
+    {
+      "id": "cross-file-chain",
+      "queryClass": "cross-file",
+      "question": "结合三份资料，AX-17 最终对应哪个指标和 Q3 目标？",
+      "expected": {
+        "facts": ["AX-17", "MET-HR-02", "95%"],
+        "evidence": [
+          { "document": "kickoff-pdf", "coordinate": "page:2" },
+          { "document": "meeting-docx", "coordinate": "paragraph:3" },
+          { "document": "metrics-xlsx", "coordinate": "指标总览!A4:F4" }
+        ]
+      },
+      "forbiddenFacts": ["90%"]
+    },
+    {
+      "id": "sparse-coordinate",
+      "queryClass": "sparse-sheet",
+      "question": "稀疏 Sheet 的 Z200 是什么值？",
+      "expected": {
+        "facts": ["SPARSE-ANCHOR-200"],
+        "evidence": [{ "document": "metrics-xlsx", "coordinate": "稀疏数据!Z200" }]
+      },
+      "forbiddenFacts": ["SPARSE-ANCHOR-100"]
+    },
+    {
+      "id": "ordered-cjk-phrase",
+      "queryClass": "ordered-cjk-phrase",
+      "question": "精确检索“流程绩效”，不要把“绩效流程”干扰项当作答案。",
+      "expected": {
+        "facts": ["流程绩效", "MET-HR-02"],
+        "evidence": [{ "document": "metrics-xlsx", "coordinate": "指标总览!B4" }]
+      },
+      "forbiddenFacts": ["DISTRACTOR-REVERSED"]
+    },
+    {
+      "id": "single-han-character",
+      "queryClass": "single-cjk-character",
+      "question": "检索“税”，对应的指标和目标是什么？",
+      "expected": {
+        "facts": ["MET-TAX-01", "99%"],
+        "evidence": [{ "document": "metrics-xlsx", "coordinate": "指标总览!A5:F5" }]
+      },
+      "forbiddenFacts": ["95%"]
+    },
+    {
+      "id": "ascii-number-token",
+      "queryClass": "ascii-number-mixed",
+      "question": "Q3-IPD 对应哪个流程域和负责人？",
+      "expected": {
+        "facts": ["IPD", "Synthetic PMO"],
+        "evidence": [{ "document": "metrics-xlsx", "coordinate": "流程域分工!A3:D3" }]
+      },
+      "forbiddenFacts": ["Synthetic HRBP"]
+    },
+    {
+      "id": "pptx-slide-notes",
+      "queryClass": "exact-slide",
+      "question": "演示文稿第 2 页的决策和 speaker notes 负责人是什么？",
+      "expected": {
+        "facts": ["Decision D-26", "Synthetic Strategy PMO"],
+        "evidence": [{ "document": "strategy-pptx", "coordinate": "slide:2" }]
+      },
+      "forbiddenFacts": ["Synthetic HRBP"]
+    },
+    {
+      "id": "negative-no-answer",
+      "queryClass": "negative",
+      "question": "资料中 Q4 预算目标是多少？",
+      "expected": {
+        "facts": [],
+        "evidence": [],
+        "noAnswer": true
+      },
+      "forbiddenFacts": ["80%", "90%", "95%", "99%"]
+    }
+  ]
+}

@@ -5,9 +5,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import JSZip from 'jszip'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
-import { parsePdf } from '../src/parse/pdf.ts'
+import { PDF_PAGE_SEPARATOR, parsePdf, splitPdfPages } from '../src/parse/pdf.ts'
 import { parseDocx } from '../src/parse/docx.ts'
-import { parseXlsx } from '../src/parse/xlsx.ts'
+import { parseXlsx, parseXlsxWorkbook, projectXlsx } from '../src/parse/xlsx.ts'
+import { parsePptx } from '../src/parse/pptx.ts'
 import { parseDocument } from '../src/parse/index.ts'
 import { decodeText, windowLines } from '../src/parse/text.ts'
 
@@ -67,6 +68,92 @@ async function makeXlsx(rows: Array<Array<string | number>>): Promise<Uint8Array
   return new Uint8Array(await zip.generateAsync({ type: 'nodebuffer' }))
 }
 
+interface CoordinateSheetFixture {
+  name: string
+  relationshipTarget: string
+  relationshipType?: string
+  targetMode?: string
+  partName: string
+  xml: string
+}
+
+async function makeCoordinateXlsx(sheets: CoordinateSheetFixture[]): Promise<Uint8Array> {
+  const zip = new JSZip()
+  const overrides = sheets
+    .map((sheet) => `<Override PartName="/${sheet.partName}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`)
+    .join('')
+  zip.file('[Content_Types].xml', `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${overrides}</Types>`)
+  zip.file('_rels/.rels', `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`)
+  zip.file('xl/workbook.xml', `<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheets.map((sheet, index) => `<sheet name="${sheet.name}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`).join('')}</sheets></workbook>`)
+  zip.file('xl/_rels/workbook.xml.rels', `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((sheet, index) => `<Relationship Id="rId${index + 1}" Type="${sheet.relationshipType ?? 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet'}" Target="${sheet.relationshipTarget}"${sheet.targetMode === undefined ? '' : ` TargetMode="${sheet.targetMode}"`}/>`).join('')}</Relationships>`)
+  for (const sheet of sheets) zip.file(sheet.partName, sheet.xml)
+  return new Uint8Array(await zip.generateAsync({ type: 'nodebuffer' }))
+}
+
+function patchCentralOriginalSizes(bytes: Uint8Array, declaredSizes: Record<string, number>): Uint8Array {
+  const output = Uint8Array.from(bytes)
+  const pending = new Set(Object.keys(declaredSizes))
+  const readU16 = (offset: number): number => output[offset] | (output[offset + 1] << 8)
+  const writeU32 = (offset: number, value: number): void => {
+    output[offset] = value & 0xff
+    output[offset + 1] = (value >>> 8) & 0xff
+    output[offset + 2] = (value >>> 16) & 0xff
+    output[offset + 3] = (value >>> 24) & 0xff
+  }
+  for (let offset = 0; offset + 46 <= output.length && pending.size > 0; offset += 1) {
+    if (
+      output[offset] !== 0x50 || output[offset + 1] !== 0x4b ||
+      output[offset + 2] !== 0x01 || output[offset + 3] !== 0x02
+    ) continue
+    const nameLength = readU16(offset + 28)
+    const extraLength = readU16(offset + 30)
+    const commentLength = readU16(offset + 32)
+    const next = offset + 46 + nameLength + extraLength + commentLength
+    if (next > output.length) continue
+    const name = new TextDecoder().decode(output.subarray(offset + 46, offset + 46 + nameLength))
+    const declaredSize = declaredSizes[name]
+    if (declaredSize !== undefined) {
+      writeU32(offset + 24, declaredSize)
+      pending.delete(name)
+    }
+    offset = next - 1
+  }
+  assert.deepEqual([...pending], [], `missing central-directory fixtures: ${[...pending].join(', ')}`)
+  return output
+}
+
+async function makePptx(): Promise<Uint8Array> {
+  const zip = new JSZip()
+  zip.file('[Content_Types].xml', '<?xml version="1.0"?><Types/>')
+  zip.file('ppt/presentation.xml', `<?xml version="1.0"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst><p:sldId id="300" r:id="rId7"/><p:sldId id="301" r:id="rId3"/></p:sldIdLst>
+</p:presentation>`)
+  zip.file('ppt/_rels/presentation.xml.rels', `<?xml version="1.0"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>
+  <Relationship Id="rId7" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide2.xml"/>
+</Relationships>`)
+  const slide = (title: string, body: string) => `<?xml version="1.0"?>
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld><p:spTree><p:sp><p:txBody>
+    <a:p><a:r><a:t>${title}</a:t></a:r></a:p>
+    <a:p><a:r><a:t>${body}</a:t></a:r><a:br/><a:r><a:t>After break</a:t></a:r></a:p>
+  </p:txBody></p:sp></p:spTree></p:cSld>
+</p:sld>`
+  zip.file('ppt/slides/slide1.xml', slide('Second logical slide', 'STRAT-02'))
+  zip.file('ppt/slides/slide2.xml', slide('First logical slide', 'STRAT-01'))
+  zip.file('ppt/slides/_rels/slide2.xml.rels', `<?xml version="1.0"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdNotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide4.xml"/>
+</Relationships>`)
+  zip.file('ppt/notesSlides/notesSlide4.xml', `<?xml version="1.0"?>
+<p:notes xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Speaker note N-17</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld>
+</p:notes>`)
+  return new Uint8Array(await zip.generateAsync({ type: 'nodebuffer' }))
+}
+
 test('pdf text extraction', async () => {
   const pdf = await makePdf('Hello PDF world')
   const text = await parsePdf(pdf)
@@ -80,10 +167,64 @@ test('pdf separated text runs get a space inserted', async () => {
   assert.match(text, /Hello world/)
 })
 
+test('PDF form-feed page boundaries preserve empty pages and page-local blank lines', async () => {
+  const doc = await PDFDocument.create()
+  const font = await doc.embedFont(StandardFonts.Helvetica)
+  const first = doc.addPage([400, 300])
+  first.drawText('PAGE-ONE', { x: 50, y: 250, size: 14, font })
+  doc.addPage([400, 300])
+  const third = doc.addPage([400, 300])
+  third.drawText('PAGE-THREE', { x: 50, y: 250, size: 14, font })
+  const pages = splitPdfPages(await parsePdf(new Uint8Array(await doc.save())))
+  assert.equal(pages.length, 3)
+  assert.match(pages[0], /PAGE-ONE/)
+  assert.equal(pages[1], '')
+  assert.match(pages[2], /PAGE-THREE/)
+
+  const withPageLocalBlankLine = `first\n\nthird${PDF_PAGE_SEPARATOR}next page`
+  assert.deepEqual(splitPdfPages(withPageLocalBlankLine), ['first\n\nthird', 'next page'])
+})
+
 test('docx text extraction', async () => {
   const text = await parseDocx(await makeDocx())
   assert.match(text, /First paragraph/)
   assert.match(text, /Second paragraph/)
+})
+
+test('pptx follows presentation order and includes speaker notes', async () => {
+  const text = await parsePptx(await makePptx())
+  assert.match(text, /^### Slide 1\nFirst logical slide/m)
+  assert.ok(text.indexOf('First logical slide') < text.indexOf('Second logical slide'))
+  assert.match(text, /STRAT-01\nAfter break/)
+  assert.match(text, /#### Speaker notes\nSpeaker note N-17/)
+  assert.match(text, /### Slide 2\nSecond logical slide/)
+})
+
+test('pptx follows relationship targets with legal nonstandard part names', async () => {
+  const zip = new JSZip()
+  zip.file('ppt/presentation.xml', `<?xml version="1.0"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:sldIdLst><p:sldId id="300" r:id="rCustom"/></p:sldIdLst>
+</p:presentation>`)
+  zip.file('ppt/_rels/presentation.xml.rels', `<?xml version="1.0"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rCustom" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="custom/scene-A.xml"/>
+</Relationships>`)
+  zip.file('ppt/custom/scene-A.xml', `<?xml version="1.0"?>
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Custom relationship slide</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld>
+</p:sld>`)
+  zip.file('ppt/custom/_rels/scene-A.xml.rels', `<?xml version="1.0"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rNotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="notes/note-A.xml"/>
+</Relationships>`)
+  zip.file('ppt/custom/notes/note-A.xml', `<?xml version="1.0"?>
+<p:notes xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Custom relationship note</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld>
+</p:notes>`)
+  const text = await parsePptx(new Uint8Array(await zip.generateAsync({ type: 'nodebuffer' })))
+  assert.match(text, /^### Slide 1\nCustom relationship slide/m)
+  assert.match(text, /#### Speaker notes\nCustom relationship note/)
 })
 
 test('xlsx text extraction with row limit', async () => {
@@ -100,8 +241,99 @@ test('xlsx text extraction with row limit', async () => {
   const limited = await parseXlsx(bytes, { sheetRowLimit: 2 })
   assert.match(limited, /Alice/)
   assert.doesNotMatch(limited, /Bob/)
-  assert.match(limited, /### Sheet:/)
-  assert.match(limited, /已截断/)
+  assert.match(limited, /### Sheet 1\/1:/)
+  assert.match(limited, /truncated/)
+})
+
+test('xlsx rejects a hostile central-directory expansion size before decoding', async () => {
+  const bytes = await makeXlsx([['safe']])
+  const hostile = patchCentralOriginalSizes(bytes, {
+    'xl/worksheets/sheet1.xml': 0xfffffff0
+  })
+  await assert.rejects(
+    parseXlsx(hostile, { sheetRowLimit: 10 }),
+    /cannot unpack XLSX safely.*sheet1\.xml.*declares 4294967280 bytes/
+  )
+})
+
+test('xlsx workbook parsing can be reused for multiple projections', async () => {
+  const workbook = await parseXlsxWorkbook(await makeXlsx([
+    ['Name', 'Score'],
+    ['Alice', 42]
+  ]))
+  assert.equal(workbook.length, 1)
+  assert.match(projectXlsx(workbook, { sheetRowLimit: 10, listOnly: true }), /Workbook \(1 sheets\)/)
+  assert.match(projectXlsx(workbook, { sheetRowLimit: 10, sheet: 1 }), /Alice/)
+})
+
+test('xlsx accepts a bounded sparse grid at a custom relationship target', async () => {
+  const bytes = await makeCoordinateXlsx([{
+    name: 'Sparse',
+    // Attribute entities are decoded by the same SAX contract used by
+    // read-excel-file; a string/regex preflight could easily miss this target.
+    relationshipTarget: 'custom/sparse&#45;A.xml',
+    partName: 'xl/custom/sparse-A.xml',
+    xml: `<?xml version="1.0"?><x:worksheet xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><x:sheetData><x:row custom="first" r="1000"><x:c t="inlineStr" r="CV1000"><x:is><x:t>SPARSE_OK</x:t></x:is></x:c></x:row></x:sheetData></x:worksheet>`
+  }])
+  const workbook = await parseXlsxWorkbook(bytes)
+  assert.equal(workbook[0].data.length, 1000)
+  assert.equal(workbook[0].data[999][99], 'SPARSE_OK')
+  assert.match(projectXlsx(workbook, { sheetRowLimit: 1, listOnly: true }), /used CV1000:CV1000/)
+})
+
+test('xlsx inspects worksheet members even when their relationship says External', async () => {
+  const bytes = await makeCoordinateXlsx([{
+    name: 'External-labelled member',
+    relationshipTarget: 'custom/external&#45;sheet.xml',
+    relationshipType: 'http://purl.oclc.org/ooxml/officeDocument/relationships/worksheet',
+    targetMode: 'External',
+    partName: 'xl/custom/external-sheet.xml',
+    xml: `<?xml version="1.0"?><x:worksheet xmlns:x="http://purl.oclc.org/ooxml/spreadsheetml/main"><x:sheetData><x:row r="200001"><x:c r="A200001" t="inlineStr"><x:is><x:t>x</x:t></x:is></x:c></x:row></x:sheetData></x:worksheet>`
+  }])
+  await assert.rejects(
+    parseXlsxWorkbook(bytes),
+    /worksheet .*external-sheet\.xml.*200001 logical rows.*limit 200000/
+  )
+})
+
+test('xlsx rejects tiny worksheets with extreme row or cell coordinates before decoding', async () => {
+  const namespace = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+  const extremeRow = await makeCoordinateXlsx([{
+    name: 'Extreme row',
+    relationshipTarget: 'custom/row.xml',
+    partName: 'xl/custom/row.xml',
+    xml: `<?xml version="1.0"?><x:worksheet xmlns:x="${namespace}"><x:sheetData><x:row r="1048576"><x:c r="A1048576" t="inlineStr"><x:is><x:t>x</x:t></x:is></x:c></x:row></x:sheetData></x:worksheet>`
+  }])
+  await assert.rejects(
+    parseXlsxWorkbook(extremeRow),
+    /worksheet .*row\.xml.*1048576 logical rows.*limit 200000/
+  )
+
+  const extremeCell = await makeCoordinateXlsx([{
+    name: 'Extreme cell',
+    relationshipTarget: 'custom/cell.xml',
+    partName: 'xl/custom/cell.xml',
+    // Entity-encoded row digits exercise structured attribute decoding.
+    xml: `<?xml version="1.0"?><x:worksheet xmlns:x="${namespace}"><x:sheetData><x:row><x:c t="inlineStr" r="XFD&#49;048576"><x:is><x:t>x</x:t></x:is></x:c></x:row></x:sheetData></x:worksheet>`
+  }])
+  await assert.rejects(
+    parseXlsxWorkbook(extremeCell),
+    /worksheet .*cell\.xml.*1048576x16384 logical grid \(17179869184 cells; limit 2000000\)/
+  )
+})
+
+test('xlsx caps aggregate logical grids across the workbook', async () => {
+  const namespace = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+  const sheets: CoordinateSheetFixture[] = Array.from({ length: 3 }, (_, index) => ({
+    name: `Grid ${index + 1}`,
+    relationshipTarget: `custom/grid-${index + 1}.xml`,
+    partName: `xl/custom/grid-${index + 1}.xml`,
+    xml: `<?xml version="1.0"?><worksheet xmlns="${namespace}"><sheetData><row r="20000"><c r="CV20000" t="inlineStr"><is><t>x</t></is></c></row></sheetData></worksheet>`
+  }))
+  await assert.rejects(
+    parseXlsxWorkbook(await makeCoordinateXlsx(sheets)),
+    /workbook declares 6000000 logical cells \(limit 5000000\)/
+  )
 })
 
 test('utf-8 text decoding', () => {
@@ -154,6 +386,31 @@ async function makeMultiSheetXlsx(): Promise<Uint8Array> {
   return new Uint8Array(await zip.generateAsync({ type: 'nodebuffer' }))
 }
 
+test('xlsx rejects excessive aggregate XML expansion before decoding', async () => {
+  const thirtyMiB = 30 * 1024 * 1024
+  const hostile = patchCentralOriginalSizes(await makeMultiSheetXlsx(), {
+    '[Content_Types].xml': thirtyMiB,
+    'xl/workbook.xml': thirtyMiB,
+    'xl/_rels/workbook.xml.rels': thirtyMiB,
+    'xl/worksheets/sheet1.xml': thirtyMiB,
+    'xl/worksheets/sheet2.xml': thirtyMiB
+  })
+  await assert.rejects(
+    parseXlsx(hostile, { sheetRowLimit: 10 }),
+    /cannot unpack XLSX safely.*in total.*limit 134217728/
+  )
+})
+
+test('xlsx rejects overlong ZIP member names before decoding', async () => {
+  const zip = await JSZip.loadAsync(await makeXlsx([['safe']]))
+  zip.file(`xl/${'a'.repeat(1100)}.xml`, '<ignored/>')
+  const hostile = new Uint8Array(await zip.generateAsync({ type: 'nodebuffer' }))
+  await assert.rejects(
+    parseXlsx(hostile, { sheetRowLimit: 10 }),
+    /cannot unpack XLSX safely: member name is .* bytes \(limit 1024\)/
+  )
+})
+
 test('scan-only PDFs are flagged instead of returning empty text', async () => {
   const text = await parsePdf(await makeBlankPdf())
   assert.match(text, /没有文本层|扫描/)
@@ -174,11 +431,12 @@ test('xlsx sheet parameter reads a single sheet in full', async () => {
   await assert.rejects(parseXlsx(bytes, { sheetRowLimit: 1, sheet: 9 }), /out of range/)
 })
 
-test('sheet 参数只对 xlsx 有意义，对 pdf/docx/text 显式报错而非静默忽略', async () => {
+test('sheet 参数只对 xlsx 有意义，对 pdf/docx/pptx/text 显式报错而非静默忽略', async () => {
   const pdfBytes = await makePdf('sheet n/a') // pdf-lib 标准字体只能编码 WinAnsi/拉丁文本
   for (const [bytes, label] of [
     [pdfBytes, 'pdf'],
     [await makeDocx(), 'docx'],
+    [await makePptx(), 'pptx'],
     [new TextEncoder().encode('plain'), 'text']
   ] as const) {
     await assert.rejects(
@@ -191,15 +449,71 @@ test('sheet 参数只对 xlsx 有意义，对 pdf/docx/text 显式报错而非�
   assert.match(ok, /a/)
 })
 
-test('listOnly lists sheet names without reading cells', async () => {
+test('listOnly returns a workbook structure inventory without leaking cell values', async () => {
   const bytes = await makeMultiSheetXlsx()
   const listed = await parseXlsx(bytes, { sheetRowLimit: 1, listOnly: true })
-  assert.match(listed, /Sheets \(2\)/)
+  assert.match(listed, /Workbook \(2 sheets\)/)
   assert.match(listed, /1\. S1/)
   assert.match(listed, /2\. S2/)
-  // 不读单元格：没有 alpha/beta 内容。
+  assert.match(listed, /3 populated rows/)
+  assert.match(listed, /3 non-empty cells/)
+  // 清单只投影结构统计，不泄露 alpha/beta 单元格内容。
   assert.doesNotMatch(listed, /alpha/)
   assert.doesNotMatch(listed, /beta/)
+})
+
+test('listOnly reports the actual non-empty used range', async () => {
+  const bytes = await makeXlsx([[''], ['', 'only-value']])
+  const listed = await parseXlsx(bytes, { sheetRowLimit: 1, listOnly: true })
+  assert.match(listed, /used B2:B2/)
+  assert.doesNotMatch(listed, /only-value/)
+})
+
+test('cellRange keeps A1 coordinates and requires a selected sheet', async () => {
+  const bytes = await makeXlsx([
+    ['Name', 'Score', 'Team'],
+    ['Alice', 42, 'Red'],
+    ['Bob', 7, 'Blue']
+  ])
+  const selected = await parseXlsx(bytes, { sheetRowLimit: 1, sheet: 1, cellRange: 'B2:C3' })
+  assert.match(selected, /range B2:C3/)
+  assert.match(selected, /row\tB\tC/)
+  assert.match(selected, /2\t42\tRed/)
+  assert.match(selected, /3\t7\tBlue/)
+  assert.doesNotMatch(selected, /Alice/)
+  await assert.rejects(
+    parseXlsx(bytes, { sheetRowLimit: 1, cellRange: 'A1:B2' }),
+    /cell_range requires sheet/
+  )
+  await assert.rejects(
+    parseXlsx(bytes, { sheetRowLimit: 1, sheet: 1, cellRange: 'B9:A1' }),
+    /invalid cell_range/
+  )
+  await assert.rejects(
+    parseXlsx(bytes, { sheetRowLimit: 1, sheet: 1, cellRange: 'A1:XFD1048576' }),
+    /at most 100000 cells/
+  )
+})
+
+async function makeWorkbookWithoutSheet1Xml(): Promise<Uint8Array> {
+  const zip = new JSZip()
+  zip.file('[Content_Types].xml', `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet7.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`)
+  zip.file('_rels/.rels', `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`)
+  zip.file('xl/workbook.xml', `<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="First" sheetId="9" r:id="rId7"/><sheet name="Second" sheetId="2" r:id="rId3"/></sheets></workbook>`)
+  zip.file('xl/_rels/workbook.xml.rels', `<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet7.xml"/><Relationship Id="rId7" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/></Relationships>`)
+  const xml = (value: string) => `<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>${value}</t></is></c></row></sheetData></worksheet>`
+  zip.file('xl/worksheets/sheet2.xml', xml('RELATION_FIRST_OK'))
+  zip.file('xl/worksheets/sheet7.xml', xml('RELATION_SECOND_OK'))
+  return new Uint8Array(await zip.generateAsync({ type: 'nodebuffer' }))
+}
+
+test('worksheet relationship mapping works when sheet1.xml does not exist', async () => {
+  const bytes = await makeWorkbookWithoutSheet1Xml()
+  const inventory = await parseXlsx(bytes, { sheetRowLimit: 10, listOnly: true })
+  assert.match(inventory, /1\. First/)
+  assert.match(inventory, /2\. Second/)
+  assert.match(await parseXlsx(bytes, { sheetRowLimit: 10, sheet: 1 }), /RELATION_FIRST_OK/)
+  assert.match(await parseXlsx(bytes, { sheetRowLimit: 10, sheet: 2 }), /RELATION_SECOND_OK/)
 })
 
 test('sheet out-of-range error names the available sheets', async () => {
